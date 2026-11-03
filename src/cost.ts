@@ -25,6 +25,15 @@ export interface SlotOverride {
   label?: string
 }
 
+// Energy estimate used until a power meter is connected: base load (board, motors, fans, camera, CFS)
+// plus each heater's rated watts scaled by its Klipper duty cycle
+export interface EnergyEstimate {
+  enabled: boolean
+  baseWatts: number
+  nozzleWatts: number
+  bedWatts: number
+}
+
 export interface Settings {
   currency: string
   diameter: number
@@ -32,6 +41,7 @@ export interface Settings {
   machinePerHour: number
   materials: Record<string, MaterialSetting>
   slotOverrides: SlotOverride[]
+  energyEstimate: EnergyEstimate
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -48,13 +58,21 @@ export const DEFAULT_SETTINGS: Settings = {
     Other: { pricePerKg: 25, density: 1.24 },
   },
   slotOverrides: [],
+  // Base K2 at 110 V is rated 450 W. Its bed runs at Klipper max_power 0.5, so 700 W at full duty is
+  // ~350 W peak; with a 70 W hotend and ~40 W base load that totals the rated figure.
+  energyEstimate: { enabled: true, baseWatts: 40, nozzleWatts: 70, bedWatts: 700 },
 }
 
 export function loadSettings(db: Database): Settings {
   const row = db.query<{ value: string }, []>("SELECT value FROM settings WHERE key = 'settings'").get()
   if (!row) return structuredClone(DEFAULT_SETTINGS)
   const saved = JSON.parse(row.value)
-  return { ...structuredClone(DEFAULT_SETTINGS), ...saved, materials: { ...DEFAULT_SETTINGS.materials, ...saved.materials } }
+  return {
+    ...structuredClone(DEFAULT_SETTINGS),
+    ...saved,
+    materials: { ...DEFAULT_SETTINGS.materials, ...saved.materials },
+    energyEstimate: { ...DEFAULT_SETTINGS.energyEstimate, ...saved.energyEstimate },
+  }
 }
 
 export function saveSettings(db: Database, s: Settings): void {

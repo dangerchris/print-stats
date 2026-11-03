@@ -149,3 +149,52 @@ describe("media and power", () => {
     expect(prettyName("4color-3DBench_PLA_32m.gcode")).toBe("4color-3DBench PLA 32m")
   })
 })
+
+describe("energy estimate", () => {
+  const { jobEnergy } = require("../src/jobs")
+  const { estimateWatts } = require("../src/power")
+  const s = { ...DEFAULT_SETTINGS }
+  const addJob = (db: any, id: string, start: number, end: number) => {
+    upsertHistoryJob(db, { job_id: id, filename: "a.gcode", status: "completed", start_time: start, end_time: end,
+      print_duration: end - start, total_duration: end - start, filament_used: 1000 })
+    updateJob(db, id, { creality_start: start })
+  }
+  const addSamples = (db: any, from: number, to: number, nozzle: number, bed: number) => {
+    const ins = db.query("INSERT INTO samples (ts, nozzle_power, bed_power) VALUES (?, ?, ?)")
+    for (let t = from; t <= to; t += 5) ins.run(t, nozzle, bed)
+  }
+
+  test("watts from duty", () => {
+    expect(estimateWatts({ ts: 0, nozzle_power: 0.5, bed_power: 0.5 }, s.energyEstimate)).toBe(40 + 35 + 350)
+  })
+
+  test("integrates heater duty over a fully sampled job", () => {
+    const db = memoryDb()
+    addJob(db, "1", 0, 3600)
+    addSamples(db, 0, 3600, 0.12, 0.16)
+    const e = jobEnergy(db, getJob(db, "1")!, s)
+    expect(e.source).toBe("estimated")
+    expect(e.kwh).toBeCloseTo((40 + 0.12 * 70 + 0.16 * 700) / 1000, 4) // 1 h at ~160 W
+  })
+
+  test("fills unsampled time and falls back to duration", () => {
+    const db = memoryDb()
+    addJob(db, "1", 0, 3600)
+    addSamples(db, 0, 3600, 0.12, 0.16)
+    updateJob(db, "1", { energy_kwh: 0.1604, energy_source: "estimated" })
+    addJob(db, "2", 10000, 17200) // 2 h, no samples: priced at the average of sampled jobs
+    expect(jobEnergy(db, getJob(db, "2")!, s)).toMatchObject({ source: "estimated-duration" })
+    expect(jobEnergy(db, getJob(db, "2")!, s).kwh).toBeCloseTo(0.3208, 3)
+    addJob(db, "3", 20000, 23600) // samples only for the second half (service started mid-job)
+    addSamples(db, 21800, 23600, 0.12, 0.16)
+    const e = jobEnergy(db, getJob(db, "3")!, s)
+    expect(e.source).toBe("estimated-duration")
+    expect(e.kwh).toBeCloseTo(0.1604, 2)
+  })
+
+  test("off means no energy", () => {
+    const db = memoryDb()
+    addJob(db, "1", 0, 3600)
+    expect(jobEnergy(db, getJob(db, "1")!, { ...s, energyEstimate: { ...s.energyEstimate, enabled: false } }).kwh).toBeNull()
+  })
+})

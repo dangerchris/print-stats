@@ -5,8 +5,8 @@ import { config } from "./config"
 import { getJob, updateJob, type JobRow } from "./db"
 import { extractThumbnail, parseGcode, type SlicerInfo } from "./gcode"
 import { fetchGcode, type HistoryJob } from "./moonraker"
-import { loadSettings, priceJob, type CfsState } from "./cost"
-import { integrateKwh } from "./power"
+import { loadSettings, priceJob, type CfsState, type Settings } from "./cost"
+import { estimateWatts, integrateKwh, type DutySample } from "./power"
 
 export const TERMINAL = (status: string) => status !== "in_progress"
 
@@ -82,15 +82,45 @@ export function jobWindow(job: JobRow): [number, number] {
   return [from, job.end ?? Date.now() / 1000]
 }
 
+export type EnergySource = "measured" | "estimated" | "estimated-duration" | "none"
+
+// Typical draw for jobs recorded before samples existed: the mean of sample-estimated jobs, or failing
+// that a PLA-ish steady state (nozzle ~12% and bed ~16% duty, as seen on the K2 at 220/50 C)
+function fallbackWatts(db: Database, s: Settings): number {
+  const row = db.query<{ w: number | null }, []>(`SELECT AVG(energy_kwh * 3600000.0 / total_duration) AS w FROM jobs
+    WHERE energy_source = 'estimated' AND total_duration > 600 AND merged_into IS NULL`).get()
+  const e = s.energyEstimate
+  return row?.w ?? e.baseWatts + 0.12 * e.nozzleWatts + 0.16 * e.bedWatts
+}
+
+export function jobEnergy(db: Database, job: JobRow, settings: Settings): { kwh: number | null; source: EnergySource } {
+  const [from, to] = jobWindow(job)
+  const measured = integrateKwh(db.query<{ ts: number; watts: number | null }, [number, number]>(
+    "SELECT ts, watts FROM samples WHERE ts BETWEEN ? AND ? AND watts IS NOT NULL ORDER BY ts",
+  ).all(from, to))
+  if (measured != null) return { kwh: measured, source: "measured" }
+  if (!settings.energyEstimate.enabled) return { kwh: null, source: "none" }
+  const duty = db.query<DutySample, [number, number]>(
+    "SELECT ts, nozzle_power, bed_power FROM samples WHERE ts BETWEEN ? AND ? ORDER BY ts",
+  ).all(from, to)
+  const est = integrateKwh(duty.map((d) => ({ ts: d.ts, watts: estimateWatts(d, settings.energyEstimate) })))
+  const span = Math.max(job.total_duration, (job.end ?? to) - job.start)
+  if (est != null) {
+    // Time the samples don't cover (service started mid-job, or was down) is filled at the average
+    const covered = Math.min(span, duty[duty.length - 1].ts - Math.max(duty[0].ts, job.start))
+    const gap = Math.max(0, span - covered)
+    const kwh = est + (fallbackWatts(db, settings) * gap) / 3600 / 1000
+    return { kwh, source: gap <= 0.2 * span ? "estimated" : "estimated-duration" }
+  }
+  if (!span) return { kwh: null, source: "none" }
+  return { kwh: (fallbackWatts(db, settings) * span) / 3600 / 1000, source: "estimated-duration" }
+}
+
 export function priceAndStore(db: Database, jobId: string): void {
   const job = getJob(db, jobId)
   if (!job) return
   const settings = loadSettings(db)
-  const [from, to] = jobWindow(job)
-  const watts = db.query<{ ts: number; watts: number | null }, [number, number]>(
-    "SELECT ts, watts FROM samples WHERE ts BETWEEN ? AND ? AND watts IS NOT NULL ORDER BY ts",
-  ).all(from, to)
-  const energy_kwh = integrateKwh(watts)
+  const { kwh: energy_kwh, source: energy_source } = jobEnergy(db, job, settings)
   const priced = priceJob({
     filament_mm: job.filament_mm,
     total_duration: job.total_duration,
@@ -109,7 +139,7 @@ export function priceAndStore(db: Database, jobId: string): void {
       filament_g: priced.filament_g,
       material_cost: priced.material_cost,
       energy_kwh,
-      energy_source: energy_kwh == null ? "none" : "measured",
+      energy_source,
       energy_cost: priced.energy_cost,
       machine_cost: priced.machine_cost,
       total_cost: priced.total_cost,
@@ -146,7 +176,9 @@ export async function finalizeJob(db: Database, jobId: string, currentCfs: CfsSt
 }
 
 export function recalculateAll(db: Database): number {
-  const ids = db.query<{ job_id: string }, []>("SELECT job_id FROM jobs WHERE finalized = 1").all()
+  // Sample-based jobs first, so duration-only estimates use their average
+  const ids = db.query<{ job_id: string }, []>(`SELECT job_id FROM jobs WHERE finalized = 1
+    ORDER BY (SELECT COUNT(*) FROM samples WHERE samples.ts BETWEEN jobs.start AND COALESCE(jobs.end, 1e12)) > 0 DESC, start`).all()
   for (const { job_id } of ids) priceAndStore(db, job_id)
   return ids.length
 }

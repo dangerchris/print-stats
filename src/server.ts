@@ -7,6 +7,7 @@ import { verifyAccessJwt } from "./access"
 import type { FilamentRow, JobRow } from "./db"
 import { loadSettings, saveSettings, type Settings } from "./cost"
 import { groupId, jobWindow, recalculateAll } from "./jobs"
+import { estimateWatts } from "./power"
 import type { Collector } from "./collector"
 
 // ---- auth: LAN is open; requests through the cloudflared tunnel need a password session ----
@@ -66,6 +67,7 @@ interface JobGroup {
   material_cost: number
   energy_kwh: number | null
   energy_cost: number | null
+  energy_source: string
   machine_cost: number
   total_cost: number
   thumb: string | null
@@ -92,7 +94,7 @@ function groups(db: Database, where = "1=1", params: any[] = []): JobGroup[] {
       g = {
         id, name: prettyName(r.filename), filename: r.filename, status: r.status, start: r.start, end: r.end,
         print_duration: 0, total_duration: 0, filament_g: 0, material_cost: 0, energy_kwh: null, energy_cost: null,
-        machine_cost: 0, total_cost: 0,
+        energy_source: "none", machine_cost: 0, total_cost: 0,
         thumb: mediaUrl(id, thumb), snapshot: mediaUrl(id, root.snapshot), video: mediaUrl(id, root.video),
         video_source: root.video_source, media_state: root.media_state, fragments: [], filaments: [],
       }
@@ -109,6 +111,10 @@ function groups(db: Database, where = "1=1", params: any[] = []): JobGroup[] {
     g.total_cost += r.total_cost ?? 0
     if (r.energy_kwh != null) g.energy_kwh = (g.energy_kwh ?? 0) + r.energy_kwh
     if (r.energy_cost != null) g.energy_cost = (g.energy_cost ?? 0) + r.energy_cost
+    // A group is only "measured" if every part was
+    const rank = ["none", "measured", "estimated", "estimated-duration"]
+    const src = r.energy_source ?? "none"
+    if (rank.indexOf(src) > rank.indexOf(g.energy_source)) g.energy_source = src
     for (const f of filBy.get(r.job_id) ?? []) {
       const same = g.filaments.find((x) => x.idx === f.idx && x.slot === f.slot)
       if (same) {
@@ -130,6 +136,7 @@ function summary(db: Database) {
     material_cost: all.reduce((a, g) => a + g.material_cost, 0),
     energy_kwh: all.some((g) => g.energy_kwh != null) ? all.reduce((a, g) => a + (g.energy_kwh ?? 0), 0) : null,
     energy_cost: all.some((g) => g.energy_cost != null) ? all.reduce((a, g) => a + (g.energy_cost ?? 0), 0) : null,
+    energy_estimated: all.some((g) => g.energy_source.startsWith("estimated")),
     total_cost: all.reduce((a, g) => a + g.total_cost, 0),
     wasted_g: all.filter((g) => g.status !== "completed").reduce((a, g) => a + g.filament_g, 0),
   }
@@ -162,7 +169,9 @@ function samplesFor(db: Database, id: string) {
     chamber, chamber_target, watts, state FROM samples WHERE ts BETWEEN ? AND ? ORDER BY ts`).all(from, to)
   // Bucket to at most ~1500 points; a gap > 60 s (service down, printer off) becomes a null break
   const step = Math.max(1, Math.ceil(raw.length / 1500))
-  const cols = ["nozzle", "nozzle_target", "nozzle_power", "bed", "bed_target", "bed_power", "chamber", "chamber_target", "watts"]
+  const est = loadSettings(db).energyEstimate
+  for (const r of raw) r.est_watts = est.enabled ? estimateWatts(r, est) : null
+  const cols = ["nozzle", "nozzle_target", "nozzle_power", "bed", "bed_target", "bed_power", "chamber", "chamber_target", "watts", "est_watts"]
   const out: Record<string, (number | null)[]> = { ts: [] }
   for (const c of cols) out[c] = []
   out.paused = []
@@ -190,7 +199,9 @@ function validSettings(s: any): s is Settings {
   return s && typeof s === "object" && typeof s.currency === "string" && s.diameter > 0 && s.kwhRate >= 0 &&
     s.machinePerHour >= 0 && s.materials && typeof s.materials === "object" &&
     Object.values(s.materials).every((m: any) => m.pricePerKg >= 0 && m.density > 0) &&
-    Array.isArray(s.slotOverrides) && s.slotOverrides.every((o: any) => typeof o.slot === "string" && o.pricePerKg >= 0)
+    Array.isArray(s.slotOverrides) && s.slotOverrides.every((o: any) => typeof o.slot === "string" && o.pricePerKg >= 0) &&
+    s.energyEstimate && typeof s.energyEstimate.enabled === "boolean" &&
+    ["baseWatts", "nozzleWatts", "bedWatts"].every((k) => s.energyEstimate[k] >= 0)
 }
 
 function serveFile(req: Request, file: string): Response {

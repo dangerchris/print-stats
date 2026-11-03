@@ -36,7 +36,7 @@
   </section>
 </main>
 <script type="module">
-import { api, setCurrency, money, grams, temp, duration, date, statusHtml, esc, swatches, tip, nav } from "/static/common.js"
+import { api, setCurrency, money, energyMoney, grams, temp, duration, date, statusHtml, esc, swatches, tip, nav } from "/static/common.js"
 
 document.getElementById("nav").innerHTML = nav("jobs")
 let jobs = []
@@ -77,7 +77,7 @@ function renderJobs() {
       <td class="r">${duration(j.total_duration)}</td>
       <td class="r">${swatches(j.filaments)} ${grams(j.filament_g)}</td>
       <td class="r hide-sm">${money(j.material_cost)}</td>
-      <td class="r hide-sm">${j.energy_cost == null ? `<span class="muted">no meter</span>` : money(j.energy_cost)}</td>
+      <td class="r hide-sm">${energyMoney(j.energy_cost, j.energy_source)}</td>
       <td class="r"><b>${money(j.total_cost)}</b></td>
     </tr>`).join("")
 }
@@ -102,7 +102,9 @@ async function loadSummary() {
     tile("Jobs", t.jobs, `${t.completed} completed`),
     tile("Print time", `${t.print_hours.toFixed(1)} h`),
     tile("Filament", grams(t.filament_g), `${grams(t.wasted_g)} on failed/cancelled`),
-    tile("Total cost", money(t.total_cost), t.energy_cost == null ? "filament only, no power meter yet" : `${money(t.energy_cost)} electricity`),
+    tile("Total cost", money(t.total_cost), t.energy_cost == null ? "filament only"
+      : `incl. ${t.energy_estimated ? "~" : ""}${money(t.energy_cost)} electricity${t.energy_estimated ? " (estimated)" : ""}`),
+    t.energy_kwh != null ? tile("Electricity", `${t.energy_estimated ? "~" : ""}${t.energy_kwh.toFixed(1)} kWh`, money(t.energy_cost)) : "",
     tile("Average per job", money(t.jobs ? t.total_cost / t.jobs : 0)),
   ].join("")
   bars(document.getElementById("cost-week"), s.weeks, "cost", money)
@@ -128,6 +130,7 @@ async function loadLive() {
         ${l.layer != null ? `<span>Layer <b class="num">${l.layer}${l.layerCount ? ` / ${l.layerCount}` : ""}</b></span>` : ""}
         <span>Elapsed <b class="num">${duration(l.printDuration)}</b>${l.estTime ? ` of ~${duration(l.estTime)}` : ""}</span>
         <span>Filament <b class="num">${grams(l.filamentG)}</b></span>
+        ${l.energyKwh != null ? `<span>Energy <b class="num">${l.energySource === "measured" ? "" : "~"}${l.energyKwh.toFixed(2)} kWh</b></span>` : ""}
         <span>Cost so far <b class="num">${money(l.cost)}</b></span>
         ${l.jobId ? `<a href="/job?id=${encodeURIComponent(l.jobId)}">Details</a>` : ""}
       </div>

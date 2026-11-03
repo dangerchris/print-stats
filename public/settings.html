@@ -21,6 +21,16 @@
       <p class="note">Machine time covers wear and depreciation; leave at 0 to count only filament and electricity.</p>
     </section>
     <section class="card">
+      <h2>Energy estimate</h2>
+      <p class="note">Used until a power meter is connected. Each sample's draw is the base load plus each heater's full-power watts times its duty cycle. The defaults fit the base K2 on 110 V (rated 450 W; the bed runs at half of its 700 W element).</p>
+      <div class="form-grid">
+        <label>Estimate electricity <select name="estEnabled"><option value="1">On</option><option value="0">Off</option></select></label>
+        <label>Base load (W) <input type="number" name="baseWatts" step="1" min="0" required></label>
+        <label>Nozzle heater at full power (W) <input type="number" name="nozzleWatts" step="1" min="0" required></label>
+        <label>Bed heater at full power (W) <input type="number" name="bedWatts" step="1" min="0" required></label>
+      </div>
+    </section>
+    <section class="card">
       <h2>Materials</h2>
       <div class="table-wrap"><table id="materials"></table></div>
       <div class="actions"><button type="button" class="ghost" id="add-material">Add material</button></div>
@@ -44,6 +54,8 @@ document.getElementById("nav").innerHTML = nav("settings")
 const form = document.getElementById("form")
 const { settings, cfs } = await api("/api/settings")
 for (const k of ["currency", "kwhRate", "machinePerHour", "diameter"]) form.elements[k].value = settings[k]
+for (const k of ["baseWatts", "nozzleWatts", "bedWatts"]) form.elements[k].value = settings.energyEstimate[k]
+form.elements.estEnabled.value = settings.energyEstimate.enabled ? "1" : "0"
 
 const matTable = document.getElementById("materials")
 function renderMaterials(mats) {
@@ -94,6 +106,12 @@ function collect() {
     diameter: Number(form.elements.diameter.value),
     materials,
     slotOverrides,
+    energyEstimate: {
+      enabled: form.elements.estEnabled.value === "1",
+      baseWatts: Number(form.elements.baseWatts.value),
+      nozzleWatts: Number(form.elements.nozzleWatts.value),
+      bedWatts: Number(form.elements.bedWatts.value),
+    },
   }
 }
 

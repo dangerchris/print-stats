@@ -15,6 +15,19 @@ export const setCurrency = (c) => (currency = c || "$")
 
 export const money = (v) => (v == null ? "–" : `${currency}${v.toFixed(2)}`)
 export const grams = (g) => (g == null ? "–" : g >= 1000 ? `${(g / 1000).toFixed(2)} kg` : `${g.toFixed(1)} g`)
+// Electricity: estimates are prefixed with ~ and say how they were made
+export const ENERGY_NOTE = {
+  measured: "measured by the power meter",
+  estimated: "estimated from heater duty",
+  "estimated-duration": "estimated from print time (no temperature samples)",
+}
+export function energyMoney(cost, source) {
+  if (cost == null) return `<span class="muted">–</span>`
+  return source?.startsWith("estimated")
+    ? `<span title="${ENERGY_NOTE[source]}">~${money(cost)}</span>`
+    : money(cost)
+}
+
 export const temp = (t) => (t == null ? "–" : `${t.toFixed(0)}°`)
 
 export function duration(s) {

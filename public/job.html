@@ -28,13 +28,14 @@
     <div class="chart" id="duty-chart"></div>
   </section>
   <section class="card" id="power-card" hidden>
-    <h2>Power draw</h2>
+    <h2 id="power-title">Power draw</h2>
+    <p class="note" id="power-note"></p>
     <div class="chart" id="power-chart"></div>
   </section>
   <section class="card" id="parts-card" hidden><h2>Parts</h2><p class="note">The print was paused from the printer screen and resumed as a new job; these are merged.</p><div class="table-wrap"><table id="parts"></table></div></section>
 </main>
 <script type="module">
-import { api, setCurrency, money, grams, duration, date, statusHtml, esc, cssVar, nav } from "/static/common.js"
+import { api, setCurrency, money, energyMoney, ENERGY_NOTE, grams, duration, date, statusHtml, esc, cssVar, nav } from "/static/common.js"
 
 document.getElementById("nav").innerHTML = nav("jobs")
 const id = new URLSearchParams(location.search).get("id")
@@ -61,9 +62,10 @@ document.getElementById("head").innerHTML = `
   <p class="muted">${esc(j.filename)}</p>`
 
 document.getElementById("tiles").innerHTML = [
-  tile("Total cost", money(j.total_cost), j.energy_cost == null ? "filament only" : ""),
+  tile("Total cost", money(j.total_cost), j.energy_cost == null ? "filament only" : j.energy_source === "measured" ? "" : "electricity estimated"),
   tile("Filament", money(j.material_cost), grams(j.filament_g) + (estG ? ` (slicer ${grams(estG)})` : "")),
-  tile("Electricity", j.energy_cost == null ? "–" : money(j.energy_cost), j.energy_kwh == null ? "no power meter" : `${j.energy_kwh.toFixed(3)} kWh`),
+  tile("Electricity", energyMoney(j.energy_cost, j.energy_source),
+    j.energy_kwh == null ? "no power meter" : `${j.energy_kwh.toFixed(3)} kWh, ${ENERGY_NOTE[j.energy_source] ?? ""}`),
   j.machine_cost ? tile("Machine time", money(j.machine_cost)) : "",
   tile("Print time", duration(j.print_duration), est ? `slicer estimate ${duration(est)}` : ""),
   tile("Total time", duration(j.total_duration), "incl. heating and calibration"),
@@ -190,6 +192,11 @@ if (hasTemps) {
   if (s.watts.some((v) => v != null)) {
     document.getElementById("power-card").hidden = false
     chart("power-chart", [line("Power", c[0])], [s.ts, s.watts], (v) => `${v.toFixed(0)} W`, 180)
+  } else if (s.est_watts.some((v) => v != null)) {
+    document.getElementById("power-card").hidden = false
+    document.getElementById("power-title").textContent = "Estimated power draw"
+    document.getElementById("power-note").textContent = "Base load plus each heater's rated watts times its duty cycle (see Settings). Replaced by measurements once a power meter is connected."
+    chart("power-chart", [line("Estimated power", c[0])], [s.ts, s.est_watts], (v) => `${v.toFixed(0)} W`, 180)
   }
 }
 

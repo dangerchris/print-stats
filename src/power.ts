@@ -20,6 +20,16 @@ export function createPowerSource(): PowerSource {
   return noPower
 }
 
+export interface DutySample {
+  ts: number
+  nozzle_power: number | null
+  bed_power: number | null
+}
+
+export function estimateWatts(s: DutySample, e: { baseWatts: number; nozzleWatts: number; bedWatts: number }): number {
+  return e.baseWatts + (s.nozzle_power ?? 0) * e.nozzleWatts + (s.bed_power ?? 0) * e.bedWatts
+}
+
 // kWh from watt samples (trapezoid), ignoring gaps longer than maxGap seconds
 export function integrateKwh(samples: { ts: number; watts: number | null }[], maxGap = 60): number | null {
   let wh = 0

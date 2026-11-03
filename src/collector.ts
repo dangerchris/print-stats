@@ -3,7 +3,7 @@ import { config } from "./config"
 import { getJob, updateJob, type JobRow } from "./db"
 import { cfsFromStatus, cfsStateFromStatus, loadSettings, priceJob, type CfsSlot, type CfsState } from "./cost"
 import { slicerFromLive, type SlicerInfo } from "./gcode"
-import { finalizeJob, groupId, linkFragment, upsertHistoryJob, ensureSlicer, parseCfs } from "./jobs"
+import { finalizeJob, groupId, linkFragment, upsertHistoryJob, ensureSlicer, parseCfs, jobEnergy } from "./jobs"
 import { captureFrame, mediaSweep, saveFinalSnapshot } from "./media"
 import { historyList, queryObjects } from "./moonraker"
 import type { PowerSource } from "./power"
@@ -24,6 +24,8 @@ export interface LiveState {
   cost: number | null
   temps: Record<string, { temp: number | null; target: number | null; power?: number | null }>
   watts: number | null
+  energyKwh: number | null
+  energySource: string | null
   cfs: CfsSlot[]
 }
 
@@ -33,7 +35,7 @@ export class Collector {
   live: LiveState = {
     online: false, updatedAt: 0, state: null, filename: null, jobId: null, progress: null, layer: null,
     layerCount: null, printDuration: null, estTime: null, filamentMm: null, filamentG: null, cost: null,
-    temps: {}, watts: null, cfs: [],
+    temps: {}, watts: null, energyKwh: null, energySource: null, cfs: [],
   }
   private lastState: string | null = null
   private lastLayer: number | null = null
@@ -152,6 +154,9 @@ export class Collector {
       }
     }
     this.live.jobId = liveJob?.job_id ?? null
+    const energy = liveJob ? jobEnergy(this.db, getJob(this.db, liveJob.job_id)!, loadSettings(this.db)) : null
+    this.live.energyKwh = energy?.kwh ?? null
+    this.live.energySource = energy?.source ?? null
   }
 
   private async openJob(job: JobRow, cfs: CfsState, cur: any): Promise<void> {
@@ -177,7 +182,7 @@ export class Collector {
     let cost: number | null = null
     if (active && num(ps.filament_used) != null) {
       const jobCfs = job?.cfs_json ? parseCfs(job.cfs_json) : cfsStateFromStatus(s.box, s.filament_rack)
-      const priced = priceJob({ filament_mm: ps.filament_used, total_duration: ps.total_duration ?? 0, energy_kwh: null, slicer, cfs: jobCfs }, loadSettings(this.db))
+      const priced = priceJob({ filament_mm: ps.filament_used, total_duration: ps.total_duration ?? 0, energy_kwh: this.live.energyKwh, slicer, cfs: jobCfs }, loadSettings(this.db))
       filamentG = priced.filament_g
       cost = priced.total_cost
     }
