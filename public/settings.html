@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Print Stats Settings</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="nav"></div>
+<main class="wrap">
+  <form id="form">
+    <section class="card">
+      <h2>General</h2>
+      <div class="form-grid">
+        <label>Currency symbol <input type="text" name="currency" maxlength="4" required></label>
+        <label>Electricity (per kWh) <input type="number" name="kwhRate" step="0.001" min="0" required></label>
+        <label>Machine time (per hour) <input type="number" name="machinePerHour" step="0.01" min="0" required></label>
+        <label>Filament diameter (mm) <input type="number" name="diameter" step="0.01" min="0.5" required></label>
+      </div>
+      <p class="note">Machine time covers wear and depreciation; leave at 0 to count only filament and electricity.</p>
+    </section>
+    <section class="card">
+      <h2>Materials</h2>
+      <div class="table-wrap"><table id="materials"></table></div>
+      <div class="actions"><button type="button" class="ghost" id="add-material">Add material</button></div>
+    </section>
+    <section class="card">
+      <h2>CFS slot prices</h2>
+      <p class="note">Override the material price for a specific spool. An override applies only while that colour is loaded in the slot.</p>
+      <div class="table-wrap"><table id="slots"></table></div>
+    </section>
+    <div class="actions">
+      <button type="submit">Save</button>
+      <button type="button" class="ghost" id="recalc">Save and re-price all jobs</button>
+      <span id="msg" class="muted"></span>
+    </div>
+  </form>
+</main>
+<script type="module">
+import { api, esc, nav } from "/static/common.js"
+
+document.getElementById("nav").innerHTML = nav("settings")
+const form = document.getElementById("form")
+const { settings, cfs } = await api("/api/settings")
+for (const k of ["currency", "kwhRate", "machinePerHour", "diameter"]) form.elements[k].value = settings[k]
+
+const matTable = document.getElementById("materials")
+function renderMaterials(mats) {
+  matTable.innerHTML = `<thead><tr><th>Material</th><th>Price / kg</th><th>Density (g/cm³)</th></tr></thead><tbody>${
+    Object.entries(mats).map(([name, m]) => `<tr>
+      <td><input type="text" class="m-name" value="${esc(name)}" ${name === "Other" ? "readonly" : ""} required></td>
+      <td><input type="number" class="m-price" value="${m.pricePerKg}" step="0.01" min="0" required></td>
+      <td><input type="number" class="m-density" value="${m.density}" step="0.01" min="0.5" required></td></tr>`).join("")}</tbody>`
+}
+renderMaterials(settings.materials)
+document.getElementById("add-material").onclick = () => {
+  matTable.querySelector("tbody").insertAdjacentHTML("beforeend", `<tr>
+    <td><input type="text" class="m-name" placeholder="e.g. PA-CF" required></td>
+    <td><input type="number" class="m-price" value="25" step="0.01" min="0" required></td>
+    <td><input type="number" class="m-density" value="1.24" step="0.01" min="0.5" required></td></tr>`)
+}
+
+// One row per loaded CFS slot, plus any saved override for a slot/colour no longer loaded
+const rows = cfs.map((c) => ({ ...c, o: settings.slotOverrides.find((o) => o.slot === c.slot && (!o.colour || o.colour === c.colour)) }))
+for (const o of settings.slotOverrides) {
+  if (!rows.some((r) => r.o === o)) rows.push({ slot: o.slot, colour: o.colour, type: null, o, stale: true })
+}
+document.getElementById("slots").innerHTML = `<thead><tr><th></th><th>Slot</th><th>Material</th><th>Label</th><th>Price / kg</th></tr></thead><tbody>${
+  rows.map((r, i) => `<tr data-i="${i}">
+    <td><span class="swatch" style="background:${esc(r.colour ?? "transparent")}"></span></td>
+    <td>${esc(r.slot)}${r.stale ? ` <span class="muted">(not loaded)</span>` : ""}</td>
+    <td>${esc(r.type ?? "–")}</td>
+    <td><input type="text" class="s-label" value="${esc(r.o?.label ?? "")}" placeholder="e.g. Silk"></td>
+    <td><input type="number" class="s-price" value="${r.o?.pricePerKg ?? ""}" step="0.01" min="0" placeholder="material default"></td></tr>`).join("")}</tbody>`
+
+function collect() {
+  const materials = {}
+  for (const tr of matTable.querySelectorAll("tbody tr")) {
+    const name = tr.querySelector(".m-name").value.trim()
+    if (name) materials[name] = { pricePerKg: Number(tr.querySelector(".m-price").value), density: Number(tr.querySelector(".m-density").value) }
+  }
+  const slotOverrides = []
+  for (const tr of document.querySelectorAll("#slots tbody tr")) {
+    const r = rows[tr.dataset.i]
+    const price = tr.querySelector(".s-price").value
+    if (price === "") continue
+    slotOverrides.push({ slot: r.slot, colour: r.colour, pricePerKg: Number(price), label: tr.querySelector(".s-label").value.trim() || undefined })
+  }
+  return {
+    currency: form.elements.currency.value,
+    kwhRate: Number(form.elements.kwhRate.value),
+    machinePerHour: Number(form.elements.machinePerHour.value),
+    diameter: Number(form.elements.diameter.value),
+    materials,
+    slotOverrides,
+  }
+}
+
+const msg = document.getElementById("msg")
+async function save(recalc) {
+  if (!form.reportValidity()) return
+  try {
+    await api("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(collect()) })
+    if (recalc) {
+      const r = await api("/api/recalculate", { method: "POST" })
+      msg.textContent = `Saved; re-priced ${r.repriced} jobs.`
+    } else {
+      msg.textContent = "Saved. New jobs use these prices; existing jobs keep theirs until re-priced."
+    }
+  } catch (err) {
+    msg.textContent = `Save failed: ${err.message}`
+  }
+}
+form.onsubmit = (ev) => {
+  ev.preventDefault()
+  save(false)
+}
+document.getElementById("recalc").onclick = () => save(true)
+</script>
+</body>
+</html>

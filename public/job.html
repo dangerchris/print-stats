@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Print Job</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/vendor/uPlot.min.css">
+<script src="/static/vendor/uPlot.iife.min.js"></script>
+</head>
+<body>
+<div id="nav"></div>
+<main class="wrap">
+  <p><a href="/">&larr; All jobs</a></p>
+  <section class="card" id="head"></section>
+  <section class="tiles" id="tiles"></section>
+  <section class="card" id="media-card" hidden><h2>Timelapse and final snapshot</h2><div class="media" id="media"></div></section>
+  <section class="card"><h2>Filament</h2><div class="table-wrap"><table id="filament"></table></div><p class="note" id="filament-note"></p></section>
+  <section class="card">
+    <h2>Temperatures</h2>
+    <div class="legend" id="temp-legend"></div>
+    <div class="chart" id="temp-chart"></div>
+    <p class="note" id="temp-note"></p>
+  </section>
+  <section class="card" id="duty-card">
+    <h2>Heater duty</h2>
+    <div class="legend" id="duty-legend"></div>
+    <div class="chart" id="duty-chart"></div>
+  </section>
+  <section class="card" id="power-card" hidden>
+    <h2>Power draw</h2>
+    <div class="chart" id="power-chart"></div>
+  </section>
+  <section class="card" id="parts-card" hidden><h2>Parts</h2><p class="note">The print was paused from the printer screen and resumed as a new job; these are merged.</p><div class="table-wrap"><table id="parts"></table></div></section>
+</main>
+<script type="module">
+import { api, setCurrency, money, grams, duration, date, statusHtml, esc, cssVar, nav } from "/static/common.js"
+
+document.getElementById("nav").innerHTML = nav("jobs")
+const id = new URLSearchParams(location.search).get("id")
+const tile = (label, value, sub = "") =>
+  `<div class="tile"><div class="label">${label}</div><div class="value num">${value}</div><div class="sub">${sub}</div></div>`
+
+const MATCH_NOTE = {
+  mapped: "slot from the print dialog's mapping",
+  colour: "slot matched by colour",
+  nearest: "slot guessed from the nearest colour",
+  ambiguous: "several slots share this colour",
+  type: "priced by material type",
+  default: "no slicer data; priced as default material",
+}
+
+const j = await api(`/api/jobs/${encodeURIComponent(id)}`)
+setCurrency(j.currency)
+document.title = j.name
+const est = j.slicer?.est_time
+const estG = j.filaments.reduce((a, f) => a + (f.est_g || 0), 0)
+document.getElementById("head").innerHTML = `
+  <h1>${esc(j.name)}</h1>
+  <p class="secondary">${statusHtml(j.status)} &nbsp; ${date(j.start)}${j.end ? ` – ${date(j.end)}` : ""}</p>
+  <p class="muted">${esc(j.filename)}</p>`
+
+document.getElementById("tiles").innerHTML = [
+  tile("Total cost", money(j.total_cost), j.energy_cost == null ? "filament only" : ""),
+  tile("Filament", money(j.material_cost), grams(j.filament_g) + (estG ? ` (slicer ${grams(estG)})` : "")),
+  tile("Electricity", j.energy_cost == null ? "–" : money(j.energy_cost), j.energy_kwh == null ? "no power meter" : `${j.energy_kwh.toFixed(3)} kWh`),
+  j.machine_cost ? tile("Machine time", money(j.machine_cost)) : "",
+  tile("Print time", duration(j.print_duration), est ? `slicer estimate ${duration(est)}` : ""),
+  tile("Total time", duration(j.total_duration), "incl. heating and calibration"),
+].join("")
+
+// media
+const media = []
+if (j.video) media.push(`<div><video src="${esc(j.video)}" controls preload="metadata" playsinline></video>
+  <p class="note">${j.video_source === "own" ? "Timelapse built from camera snapshots" : "Printer timelapse"}</p></div>`)
+if (j.snapshot) media.push(`<div><a href="${esc(j.snapshot)}" target="_blank"><img src="${esc(j.snapshot)}" alt="Final snapshot"></a>
+  <p class="note">Camera snapshot when the job ended</p></div>`)
+else if (j.thumb) media.push(`<div><img src="${esc(j.thumb)}" alt="" style="max-width:300px;background:var(--surface-2)"><p class="note">Slicer preview</p></div>`)
+if (j.media_state === "pending" && !j.video) media.push(`<p class="note">Waiting for the printer's timelapse.</p>`)
+document.getElementById("media").innerHTML = media.join("")
+document.getElementById("media-card").hidden = !media.length
+
+// filament table
+document.getElementById("filament").innerHTML = `<thead><tr><th></th><th>Slot</th><th>Material</th><th class="r">Slicer est.</th>
+  <th class="r">Used</th><th class="r">Price / kg</th><th class="r">Cost</th></tr></thead><tbody>${j.filaments.map((f) => `
+  <tr><td><span class="swatch" style="background:${esc(f.colour ?? "transparent")}"></span></td>
+  <td>${esc(f.slot ?? "–")}</td><td>${esc(f.material)}${f.name ? ` <span class="muted">${esc(f.name)}</span>` : ""}</td>
+  <td class="r">${f.est_g ? grams(f.est_g) : "–"}</td><td class="r">${grams(f.actual_g)}</td>
+  <td class="r">${money(f.price_per_kg)}</td><td class="r">${money(f.cost)}</td></tr>`).join("")}</tbody>`
+const notes = [...new Set(j.filaments.map((f) => MATCH_NOTE[f.match]).filter(Boolean))]
+document.getElementById("filament-note").textContent =
+  `Used weight is the extruder's actual length (including purge) split by the slicer's per-filament estimate. ${notes.length ? `Slots: ${notes.join("; ")}.` : ""}`
+
+if (j.parts.length > 1) {
+  document.getElementById("parts-card").hidden = false
+  document.getElementById("parts").innerHTML = `<thead><tr><th>Job</th><th>Status</th><th>Started</th><th class="r">Print time</th></tr></thead><tbody>${j.parts.map((p) =>
+    `<tr><td>${esc(p.job_id)}</td><td>${statusHtml(p.status)}</td><td>${date(p.start)}</td><td class="r">${duration(p.print_duration)}</td></tr>`).join("")}</tbody>`
+}
+
+// charts
+const s = await api(`/api/jobs/${encodeURIComponent(id)}/samples`)
+const hasTemps = s.ts.length > 1
+if (!hasTemps) {
+  document.getElementById("temp-note").textContent = "No temperature samples: this job ran before the service started recording."
+  document.getElementById("duty-card").hidden = true
+}
+
+function legend(el, items) {
+  el.innerHTML = items.map(([label, colour, dashed]) =>
+    `<span><span class="${dashed ? "dash" : "solid"}" style="border-color:${colour}"></span>${label}</span>`).join("")
+}
+
+function axisStyle() {
+  return { stroke: cssVar("--muted"), grid: { stroke: cssVar("--grid"), width: 1 }, ticks: { stroke: cssVar("--axis"), width: 1 } }
+}
+
+const charts = []
+function chart(elId, series, data, yFmt, height = 260) {
+  const el = document.getElementById(elId)
+  const opts = {
+    width: el.clientWidth,
+    height,
+    legend: { show: true, live: true },
+    cursor: { y: false, points: { size: 8 } },
+    scales: { x: { time: true } },
+    axes: [axisStyle(), { ...axisStyle(), values: (u, v) => v.map(yFmt), size: 50 }],
+    series: [{ value: (u, v) => (v == null ? "–" : new Date(v * 1000).toLocaleTimeString()) }, ...series],
+    plugins: [tooltipPlugin(yFmt)],
+  }
+  const u = new uPlot(opts, data, el)
+  charts.push([u, el])
+  return u
+}
+
+// Crosshair tooltip listing every series at the hovered time
+function tooltipPlugin(fmt) {
+  let box
+  return {
+    hooks: {
+      init: (u) => {
+        box = document.createElement("div")
+        box.className = "tip"
+        u.over.appendChild(box)
+        Object.assign(box.style, { position: "absolute" })
+        u.over.addEventListener("mouseleave", () => (box.style.display = "none"))
+      },
+      setCursor: (u) => {
+        const i = u.cursor.idx
+        if (i == null) return (box.style.display = "none")
+        const rows = u.series.slice(1).filter((sr) => sr.show).map((sr) => {
+          const v = u.data[u.series.indexOf(sr)][i]
+          return `<div><span class="key" style="background:${sr._c}"></span> ${sr.label}: <b>${v == null ? "–" : fmt(v)}</b></div>`
+        })
+        box.innerHTML = `<div class="muted">${new Date(u.data[0][i] * 1000).toLocaleTimeString()}</div>${rows.join("")}`
+        box.style.display = "block"
+        const left = u.cursor.left
+        box.style.left = `${left + 12 + box.offsetWidth > u.over.clientWidth ? left - box.offsetWidth - 12 : left + 12}px`
+        box.style.top = "8px"
+      },
+    },
+  }
+}
+
+if (hasTemps) {
+  const c = [cssVar("--s1"), cssVar("--s2"), cssVar("--s3")]
+  const line = (label, stroke, dash) => ({ label, stroke, _c: stroke, width: 2, dash: dash ? [6, 4] : undefined, spanGaps: false, points: { show: false } })
+  legend(document.getElementById("temp-legend"), [
+    ["Nozzle", c[0]], ["Nozzle target", c[0], 1], ["Bed", c[1]], ["Bed target", c[1], 1], ["Chamber", c[2]], ["Chamber target", c[2], 1],
+  ])
+  const tempChart = chart("temp-chart", [
+    line("Nozzle", c[0]), line("Nozzle target", c[0], 1),
+    line("Bed", c[1]), line("Bed target", c[1], 1),
+    line("Chamber", c[2]), line("Chamber target", c[2], 1),
+  ], [s.ts, s.nozzle, s.nozzle_target, s.bed, s.bed_target, s.chamber, s.chamber_target], (v) => `${v.toFixed(0)}°C`)
+
+  legend(document.getElementById("duty-legend"), [["Nozzle heater", c[0]], ["Bed heater", c[1]]])
+  const pct = (a) => a.map((v) => (v == null ? null : v * 100))
+  const dutyChart = chart("duty-chart", [line("Nozzle heater", c[0]), line("Bed heater", c[1])],
+    [s.ts, pct(s.nozzle_power), pct(s.bed_power)], (v) => `${v.toFixed(0)}%`, 160)
+
+  // Keep the charts moving while the job is printing
+  if (j.status === "in_progress") {
+    setInterval(async () => {
+      const n = await api(`/api/jobs/${encodeURIComponent(id)}/samples`)
+      tempChart.setData([n.ts, n.nozzle, n.nozzle_target, n.bed, n.bed_target, n.chamber, n.chamber_target])
+      dutyChart.setData([n.ts, pct(n.nozzle_power), pct(n.bed_power)])
+    }, 15000)
+  }
+
+  if (s.watts.some((v) => v != null)) {
+    document.getElementById("power-card").hidden = false
+    chart("power-chart", [line("Power", c[0])], [s.ts, s.watts], (v) => `${v.toFixed(0)} W`, 180)
+  }
+}
+
+addEventListener("resize", () => charts.forEach(([u, el]) => u.setSize({ width: el.clientWidth, height: u.height })))
+</script>
+</body>
+</html>

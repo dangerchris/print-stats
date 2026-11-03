@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Print Stats</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="nav"></div>
+<main class="wrap">
+  <section id="live" class="card" hidden></section>
+  <section id="tiles" class="tiles"></section>
+  <section class="charts">
+    <div class="card"><h2>Cost per week</h2><div id="cost-week"></div></div>
+    <div class="card"><h2>Filament per week</h2><div id="grams-week"></div></div>
+  </section>
+  <section class="card">
+    <h2>Jobs</h2>
+    <div class="table-wrap">
+      <table id="jobs">
+        <thead><tr>
+          <th></th>
+          <th data-k="name">Name</th>
+          <th data-k="start">Started</th>
+          <th data-k="status">Status</th>
+          <th data-k="total_duration" class="r">Duration</th>
+          <th data-k="filament_g" class="r">Filament</th>
+          <th data-k="material_cost" class="r hide-sm">Material</th>
+          <th data-k="energy_cost" class="r hide-sm">Energy</th>
+          <th data-k="total_cost" class="r">Total</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<script type="module">
+import { api, setCurrency, money, grams, temp, duration, date, statusHtml, esc, swatches, tip, nav } from "/static/common.js"
+
+document.getElementById("nav").innerHTML = nav("jobs")
+let jobs = []
+let sort = { k: "start", dir: -1 }
+
+function tile(label, value, sub = "") {
+  return `<div class="tile"><div class="label">${label}</div><div class="value num">${value}</div><div class="sub">${sub}</div></div>`
+}
+
+function bars(el, weeks, key, fmt) {
+  if (!weeks.length) {
+    el.innerHTML = `<p class="muted">No jobs yet.</p>`
+    return
+  }
+  const max = Math.max(...weeks.map((w) => w[key])) || 1
+  const label = (t) => new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+  el.innerHTML = `<div class="bars">${weeks.map((w, i) =>
+    `<div class="bar" data-i="${i}"><div style="height:${(w[key] / max) * 100}%"></div></div>`).join("")}</div>
+    <div class="bar-axis"><span>${label(weeks[0].week)}</span><span>max ${fmt(max)}</span><span>${label(weeks.at(-1).week)}</span></div>`
+  el.querySelectorAll(".bar").forEach((b) => {
+    const w = weeks[b.dataset.i]
+    b.onmousemove = (ev) => tip(ev, `Week of ${label(w.week)}<br><b>${fmt(w[key])}</b> · ${w.jobs} job${w.jobs === 1 ? "" : "s"}`)
+    b.onmouseleave = (ev) => tip(ev, null)
+  })
+}
+
+function renderJobs() {
+  const rows = [...jobs].sort((a, b) => {
+    const x = a[sort.k] ?? -Infinity, y = b[sort.k] ?? -Infinity
+    return (x < y ? -1 : x > y ? 1 : 0) * sort.dir
+  })
+  document.querySelector("#jobs tbody").innerHTML = rows.map((j) => `
+    <tr class="link" data-id="${esc(j.id)}">
+      <td>${j.thumb ? `<img class="thumb" loading="lazy" src="${esc(j.thumb)}" alt="">` : `<div class="thumb"></div>`}</td>
+      <td>${esc(j.name)}${j.fragments.length > 1 ? ` <span class="muted">(${j.fragments.length} parts)</span>` : ""}${j.video ? ` <span class="muted" title="Timelapse">▶</span>` : ""}</td>
+      <td>${date(j.start)}</td>
+      <td>${statusHtml(j.status)}</td>
+      <td class="r">${duration(j.total_duration)}</td>
+      <td class="r">${swatches(j.filaments)} ${grams(j.filament_g)}</td>
+      <td class="r hide-sm">${money(j.material_cost)}</td>
+      <td class="r hide-sm">${j.energy_cost == null ? `<span class="muted">no meter</span>` : money(j.energy_cost)}</td>
+      <td class="r"><b>${money(j.total_cost)}</b></td>
+    </tr>`).join("")
+}
+
+document.querySelectorAll("#jobs th[data-k]").forEach((th) => {
+  th.onclick = () => {
+    sort = { k: th.dataset.k, dir: sort.k === th.dataset.k ? -sort.dir : -1 }
+    renderJobs()
+  }
+})
+document.querySelector("#jobs tbody").onclick = (ev) => {
+  const tr = ev.target.closest("tr[data-id]")
+  if (tr) location.href = `/job?id=${encodeURIComponent(tr.dataset.id)}`
+}
+
+async function loadSummary() {
+  const [s, list] = await Promise.all([api("/api/summary"), api("/api/jobs")])
+  setCurrency(s.currency)
+  jobs = list
+  const t = s.totals
+  document.getElementById("tiles").innerHTML = [
+    tile("Jobs", t.jobs, `${t.completed} completed`),
+    tile("Print time", `${t.print_hours.toFixed(1)} h`),
+    tile("Filament", grams(t.filament_g), `${grams(t.wasted_g)} on failed/cancelled`),
+    tile("Total cost", money(t.total_cost), t.energy_cost == null ? "filament only, no power meter yet" : `${money(t.energy_cost)} electricity`),
+    tile("Average per job", money(t.jobs ? t.total_cost / t.jobs : 0)),
+  ].join("")
+  bars(document.getElementById("cost-week"), s.weeks, "cost", money)
+  bars(document.getElementById("grams-week"), s.weeks, "grams", grams)
+  renderJobs()
+}
+
+async function loadLive() {
+  const l = await api("/api/live")
+  const el = document.getElementById("live")
+  const active = l.online && (l.state === "printing" || l.state === "paused" || l.jobId)
+  el.hidden = !active
+  if (!active) return l
+  const pct = (l.progress ?? 0) * 100
+  const name = (l.filename ?? "").replace(/\.gcode$/, "").replace(/\.(stl|3mf)_.*$/, "")
+  const t = l.temps
+  el.innerHTML = `<div class="live">
+    <div>
+      <div class="name">${esc(name)} ${statusHtml(l.state === "printing" ? "in_progress" : l.state)}</div>
+      <div class="progress"><div style="width:${pct.toFixed(1)}%"></div></div>
+      <div class="live-stats">
+        <span><b class="num">${pct.toFixed(1)}%</b></span>
+        ${l.layer != null ? `<span>Layer <b class="num">${l.layer}${l.layerCount ? ` / ${l.layerCount}` : ""}</b></span>` : ""}
+        <span>Elapsed <b class="num">${duration(l.printDuration)}</b>${l.estTime ? ` of ~${duration(l.estTime)}` : ""}</span>
+        <span>Filament <b class="num">${grams(l.filamentG)}</b></span>
+        <span>Cost so far <b class="num">${money(l.cost)}</b></span>
+        ${l.jobId ? `<a href="/job?id=${encodeURIComponent(l.jobId)}">Details</a>` : ""}
+      </div>
+    </div>
+    <div class="temps">
+      <span class="k"><span class="key" style="background:var(--s1)"></span>Nozzle</span><span>${temp(t.nozzle?.temp)} / ${temp(t.nozzle?.target)}</span>
+      <span class="k"><span class="key" style="background:var(--s2)"></span>Bed</span><span>${temp(t.bed?.temp)} / ${temp(t.bed?.target)}</span>
+      <span class="k"><span class="key" style="background:var(--s3)"></span>Chamber</span><span>${temp(t.chamber?.temp)}${t.chamber?.target ? ` / ${temp(t.chamber.target)}` : ""}</span>
+      ${l.watts != null ? `<span class="k">Power</span><span>${l.watts.toFixed(0)} W</span>` : ""}
+    </div>
+  </div>`
+  return l
+}
+
+let lastJobId
+async function refresh() {
+  try {
+    const live = await loadLive()
+    if (live.jobId !== lastJobId) {
+      lastJobId = live.jobId
+      await loadSummary()
+    }
+  } catch (err) {
+    console.error(err)
+  }
+}
+await loadSummary()
+await refresh()
+setInterval(refresh, 5000)
+setInterval(loadSummary, 60000)
+</script>
+</body>
+</html>
