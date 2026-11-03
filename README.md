@@ -26,11 +26,12 @@ PORT=8790
 MOONRAKER_URL=http://printer.local:7125
 SNAPSHOT_URL=http://localhost:3000/api/ring/k2/snapshot
 K2_SSH=root@printer.local
-DASH_PASSWORD=...        # required for access through the cloudflared tunnel
+CF_ACCESS_TEAM=yourteam.cloudflareaccess.com
+DASH_PASSWORD=...        # fallback login through the tunnel
 SESSION_SECRET=...
 ```
 
-Requests carrying `CF-Connecting-IP` (the tunnel) need a password session; LAN requests don't.
+Requests carrying `CF-Connecting-IP` (the tunnel) need either a verified Cloudflare Access JWT or a password session. LAN requests need neither.
 
 ## Deploy
 

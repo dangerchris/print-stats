@@ -3,6 +3,7 @@ import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { config } from "./config"
+import { verifyAccessJwt } from "./access"
 import type { FilamentRow, JobRow } from "./db"
 import { loadSettings, saveSettings, type Settings } from "./cost"
 import { groupId, jobWindow, recalculateAll } from "./jobs"
@@ -240,7 +241,8 @@ export function startServer(db: Database, collector: Collector) {
         return serveFile(req, file)
       }
 
-      if (viaTunnel(req) && !hasSession(req)) {
+      if (viaTunnel(req) && !hasSession(req) &&
+          !(await verifyAccessJwt(req.headers.get("cf-access-jwt-assertion"), config.accessTeam, config.accessAud))) {
         return p.startsWith("/api/") ? json({ error: "login required" }, 401) : Response.redirect("/login", 303)
       }
 

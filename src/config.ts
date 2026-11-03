@@ -15,6 +15,9 @@ export const config = {
   dbPath: path.join(dataDir, "stats.sqlite"),
   publicDir: path.resolve(import.meta.dir, "../public"),
   password: env.DASH_PASSWORD ?? "",
+  // Cloudflare Access team domain in front of the tunnel; its JWT counts as a login
+  accessTeam: env.CF_ACCESS_TEAM ?? "",
+  accessAud: env.CF_ACCESS_AUD || undefined,
   sessionSecret: env.SESSION_SECRET ?? "",
   pollMs: Number(env.POLL_MS ?? 5000),
   reconcileMs: 30_000,
