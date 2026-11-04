@@ -192,6 +192,16 @@ describe("energy estimate", () => {
     expect(e.kwh).toBeCloseTo(0.1604, 2)
   })
 
+  test("prefers the plug and fills its dropouts from duty", () => {
+    const db = memoryDb()
+    addJob(db, "1", 0, 3600)
+    addSamples(db, 0, 3600, 0.12, 0.16)
+    db.query("UPDATE samples SET watts = 300 WHERE ts > 360").run() // plug missed the first 6 min
+    const e = jobEnergy(db, getJob(db, "1")!, s)
+    expect(e.source).toBe("measured")
+    expect(e.kwh).toBeCloseTo(0.3 * 0.9 + 0.1604 * 0.1, 2)
+  })
+
   test("off means no energy", () => {
     const db = memoryDb()
     addJob(db, "1", 0, 3600)

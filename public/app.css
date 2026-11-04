@@ -130,6 +130,20 @@ tbody tr.link:hover { background: var(--surface-2); }
 .status.error::before, .status.klippy_shutdown::before, .status.klippy_disconnect::before, .status.interrupted::before { background: var(--critical); }
 .status.in_progress::before { background: var(--accent); }
 
+/* printer plug */
+.power { display: grid; grid-template-columns: auto 1fr auto; gap: 8px 24px; align-items: center; }
+.power-head { display: grid; gap: 2px; }
+.power-now b { font-size: 22px; font-weight: 600; }
+.status.off::before { background: var(--muted); }
+.spark-wrap { min-width: 0; }
+.spark { width: 100%; height: 40px; display: block; overflow: visible; }
+.spark-line { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.spark-base { stroke: var(--axis); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.spark-x { stroke: var(--muted); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.spark-axis { display: flex; justify-content: space-between; font-size: 11px; margin-top: 2px; }
+.power-actions { display: grid; gap: 4px; justify-items: end; }
+button:disabled { opacity: 0.6; cursor: default; }
+
 /* job page */
 .media { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
 .media video, .media img { width: 100%; border-radius: 8px; background: #000; display: block; }
@@ -159,6 +173,8 @@ button.ghost { background: transparent; color: var(--ink-2); border: 1px solid v
 
 @media (max-width: 640px) {
   .live { grid-template-columns: 1fr; }
+  .power { grid-template-columns: 1fr auto; }
+  .spark-wrap { grid-column: 1 / -1; grid-row: 2; }
   .hide-sm { display: none; }
   .tile .value { font-size: 19px; }
 }

@@ -6,7 +6,7 @@ import { slicerFromLive, type SlicerInfo } from "./gcode"
 import { finalizeJob, groupId, linkFragment, upsertHistoryJob, ensureSlicer, parseCfs, jobEnergy } from "./jobs"
 import { captureFrame, mediaSweep, saveFinalSnapshot } from "./media"
 import { historyList, queryObjects } from "./moonraker"
-import type { PowerSource } from "./power"
+import type { PowerReading, PowerSource } from "./power"
 
 export interface LiveState {
   online: boolean
@@ -27,6 +27,8 @@ export interface LiveState {
   energyKwh: number | null
   energySource: string | null
   cfs: CfsSlot[]
+  // The smart plug, read even while the printer is off; null when there is no plug
+  plug: { on: boolean | null; watts: number | null; volts: number | null; at: number; canSwitch: boolean; recent: [number, number][] } | null
 }
 
 const num = (v: any): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null)
@@ -35,7 +37,7 @@ export class Collector {
   live: LiveState = {
     online: false, updatedAt: 0, state: null, filename: null, jobId: null, progress: null, layer: null,
     layerCount: null, printDuration: null, estTime: null, filamentMm: null, filamentG: null, cost: null,
-    temps: {}, watts: null, energyKwh: null, energySource: null, cfs: [],
+    temps: {}, watts: null, energyKwh: null, energySource: null, cfs: [], plug: null,
   }
   private lastState: string | null = null
   private lastLayer: number | null = null
@@ -61,8 +63,33 @@ export class Collector {
     setInterval(() => this.maintenance(), 6 * 3600_000)
   }
 
+  // Last 15 min of plug watts for the dashboard sparkline (memory only; job samples hold the rest)
+  private plugRecent: [number, number][] = []
+
+  private plugReading(r: PowerReading | null): void {
+    if (this.power.name === "none") return
+    const now = Date.now() / 1000
+    if (r) this.plugRecent.push([Math.round(now), r.watts])
+    this.plugRecent = this.plugRecent.filter(([t]) => t > now - 900)
+    const prev = this.live.plug
+    this.live.plug = r
+      ? { on: r.on ?? null, watts: r.watts, volts: r.volts ?? null, at: now, canSwitch: !!this.power.setSwitch, recent: this.plugRecent }
+      : { on: prev?.on ?? null, volts: prev?.volts ?? null, at: prev?.at ?? 0, canSwitch: !!this.power.setSwitch, watts: null, recent: this.plugRecent }
+  }
+
+  async setPower(on: boolean): Promise<NonNullable<LiveState["plug"]>> {
+    if (!this.power.setSwitch) throw new Error("no switchable plug")
+    console.log(`[power] switching printer ${on ? "on" : "off"} (printer state ${this.live.online ? this.live.state : "offline"})`)
+    this.plugReading(await this.power.setSwitch(on))
+    if (on) this.backoffUntil = 0 // look for the printer as soon as it boots
+    return this.live.plug!
+  }
+
   private async tick(): Promise<void> {
     const now = Date.now()
+    // The plug is read every poll, printer or not, so the dashboard shows it switching on and off
+    const reading = await this.power.read().catch(() => null)
+    this.plugReading(reading)
     if (now < this.backoffUntil) return
     let status: Record<string, any>
     try {
@@ -75,7 +102,6 @@ export class Collector {
     }
     if (!this.live.online) console.log("[collector] printer online")
     this.live.online = true
-    const reading = await this.power.read().catch(() => null)
     this.recordSample(status, reading?.watts ?? null)
 
     const state: string = status.print_stats?.state ?? "unknown"

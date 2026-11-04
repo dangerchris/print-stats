@@ -26,4 +26,8 @@ export const config = {
   // How long after a job ends to wait for the firmware timelapse before stitching our own
   firmwareVideoWaitMs: 15 * 60_000,
   ffmpeg: env.FFMPEG ?? "ffmpeg",
+  // The printer's smart plug (Tuya local protocol): an entry (name, id, key, ip, version) in a
+  // tinytuya-style devices.json. Keys hold characters .env would mangle, hence the file.
+  tuyaDevicesFile: path.resolve(env.TUYA_DEVICES_FILE ?? path.join(dataDir, "tuya-devices.json")),
+  tuyaDevice: env.TUYA_DEVICE ?? "3D Printer",
 }

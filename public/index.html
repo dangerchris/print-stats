@@ -9,6 +9,22 @@
 <body>
 <div id="nav"></div>
 <main class="wrap">
+  <section id="power" class="card" hidden>
+    <div class="power">
+      <div class="power-head">
+        <span class="status" id="plug-state"></span>
+        <span class="power-now"><b class="num" id="plug-watts">–</b> <span class="muted" id="plug-volts"></span></span>
+      </div>
+      <div class="spark-wrap">
+        <svg id="plug-spark" class="spark" viewBox="0 0 300 40" preserveAspectRatio="none" aria-label="Printer power, last 15 minutes"></svg>
+        <div class="spark-axis muted"><span>15 min ago</span><span id="plug-peak"></span><span>now</span></div>
+      </div>
+      <div class="power-actions">
+        <button type="button" class="ghost" id="plug-btn" hidden></button>
+        <span class="muted" id="plug-msg"></span>
+      </div>
+    </div>
+  </section>
   <section id="live" class="card" hidden></section>
   <section id="tiles" class="tiles"></section>
   <section class="charts">
@@ -112,8 +128,90 @@ async function loadSummary() {
   renderJobs()
 }
 
+// Printer plug: state, live watts, a 15 min sparkline and the on/off switch
+let live = null
+let switching = false
+const plugEls = Object.fromEntries(["power", "plug-state", "plug-watts", "plug-volts", "plug-spark", "plug-peak", "plug-btn", "plug-msg"]
+  .map((id) => [id, document.getElementById(id)]))
+
+function renderPower(l) {
+  live = l
+  const p = l.plug
+  plugEls.power.hidden = !p
+  if (!p) return
+  const responding = p.watts != null
+  const st = plugEls["plug-state"]
+  st.className = `status ${!responding ? "" : p.on ? "completed" : "off"}`
+  st.textContent = !responding ? "Plug not responding" : p.on ? "Printer on" : "Printer off"
+  plugEls["plug-watts"].textContent = responding ? `${p.watts.toFixed(p.watts < 100 ? 1 : 0)} W` : "–"
+  plugEls["plug-volts"].textContent = responding && p.volts ? `${p.volts.toFixed(0)} V` : ""
+  const btn = plugEls["plug-btn"]
+  btn.hidden = !p.canSwitch
+  if (!switching) {
+    btn.disabled = false
+    btn.textContent = p.on === false ? "Turn on" : "Turn off"
+  }
+  drawSpark(p.recent ?? [])
+}
+
+function drawSpark(pts) {
+  const svg = plugEls["plug-spark"]
+  const now = Date.now() / 1000
+  const max = Math.max(50, ...pts.map((p) => p[1]))
+  const x = (t) => ((t - (now - 900)) / 900) * 300
+  const y = (w) => 38 - (w / max) * 36
+  const path = pts.map(([t, w], i) => `${i ? "L" : "M"}${x(t).toFixed(1)},${y(w).toFixed(1)}`).join("")
+  svg.innerHTML = `<line x1="0" x2="300" y1="38" y2="38" class="spark-base"/>${pts.length > 1 ? `<path d="${path}" class="spark-line"/>` : ""}
+    <line id="spark-x" y1="0" y2="40" class="spark-x" style="display:none"/>`
+  plugEls["plug-peak"].textContent = pts.length ? `peak ${Math.max(...pts.map((p) => p[1])).toFixed(0)} W` : ""
+  svg.onmousemove = (ev) => {
+    if (!pts.length) return
+    const r = svg.getBoundingClientRect()
+    const t = now - 900 + ((ev.clientX - r.left) / r.width) * 900
+    const near = pts.reduce((a, b) => (Math.abs(b[0] - t) < Math.abs(a[0] - t) ? b : a))
+    const cx = svg.querySelector("#spark-x")
+    cx.setAttribute("x1", x(near[0]))
+    cx.setAttribute("x2", x(near[0]))
+    cx.style.display = ""
+    tip(ev, `${new Date(near[0] * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" })}<br><b>${near[1].toFixed(1)} W</b>`)
+  }
+  svg.onmouseleave = (ev) => {
+    svg.querySelector("#spark-x").style.display = "none"
+    tip(ev, null)
+  }
+}
+
+plugEls["plug-btn"].onclick = async () => {
+  const p = live?.plug
+  if (!p || switching) return
+  const on = p.on === false
+  const busy = live.online && (live.state === "printing" || live.state === "paused")
+  if (!on) {
+    const name = (live.filename ?? "").replace(/\.gcode$/, "").replace(/\.(stl|3mf)_.*$/, "")
+    const msg = busy
+      ? `The printer is ${live.state === "paused" ? "paused partway through" : "printing"} ${name}. Cutting the power will end that print. Turn the printer off anyway?`
+      : "Turn the printer off at the plug?"
+    if (!confirm(msg)) return
+  }
+  switching = true
+  const btn = plugEls["plug-btn"]
+  btn.disabled = true
+  btn.textContent = on ? "Turning on…" : "Turning off…"
+  plugEls["plug-msg"].textContent = ""
+  try {
+    const plug = await api("/api/power", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on, force: !on && busy }) })
+    switching = false
+    renderPower({ ...live, plug })
+  } catch (err) {
+    switching = false
+    plugEls["plug-msg"].textContent = `Couldn't switch the plug (${err.message.replace(/^.*: /, "")}).`
+    renderPower(live)
+  }
+}
+
 async function loadLive() {
   const l = await api("/api/live")
+  renderPower(l)
   const el = document.getElementById("live")
   const active = l.online && (l.state === "printing" || l.state === "paused" || l.jobId)
   el.hidden = !active

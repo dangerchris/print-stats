@@ -9,12 +9,12 @@ Job history, cost, temperatures and timelapses for the Creality K2. Runs on `ser
   - when a job ends, it takes a final snapshot from the ring-bridge camera (`SNAPSHOT_URL`);
   - it imports the printer's own timelapse over SSH (`K2_SSH`);
   - if the printer made none, it stitches layer-change frames with ffmpeg.
-- Power: `src/power.ts` has the provider interface; no meter is connected yet.
+- Power: reads the printer's Tuya smart plug locally (via tuyapi) every poll. Job energy integrates the plug's watts; samples it misses, and jobs from before it was installed, fall back to an estimate from heater duty.
 
 ## Run
 
 ```sh
-bun install          # dev types only; no runtime deps
+bun install
 bun test
 bun src/index.ts     # http://localhost:8790
 ```
@@ -31,13 +31,15 @@ DASH_PASSWORD=...        # fallback login through the tunnel
 SESSION_SECRET=...
 ```
 
+The smart plug is read from `data/tuya-devices.json` (`TUYA_DEVICES_FILE`), a tinytuya-style list as written by `tinytuya wizard`; the entry named `TUYA_DEVICE` (default "3D Printer") needs `id`, `key`, `ip` and `version`. Without the file, energy is estimated.
+
 Requests carrying `CF-Connecting-IP` (the tunnel) need either a verified Cloudflare Access JWT or a password session. LAN requests need neither.
 
 ## Deploy
 
 ```sh
 rsync -a --delete --exclude node_modules --exclude data --exclude .env ./ user@server:print-stats/
-ssh user@server 'export PATH=$HOME/.bun/bin:$PATH; cd print-stats && pm2 restart print-stats'
+ssh user@server 'export PATH=$HOME/.bun/bin:$PATH; cd print-stats && bun install --production && pm2 restart print-stats'
 ```
 
 Data lives in `~/print-stats/data` (SQLite + `media/<job>/`).

@@ -95,15 +95,20 @@ function fallbackWatts(db: Database, s: Settings): number {
 
 export function jobEnergy(db: Database, job: JobRow, settings: Settings): { kwh: number | null; source: EnergySource } {
   const [from, to] = jobWindow(job)
-  const measured = integrateKwh(db.query<{ ts: number; watts: number | null }, [number, number]>(
-    "SELECT ts, watts FROM samples WHERE ts BETWEEN ? AND ? AND watts IS NOT NULL ORDER BY ts",
-  ).all(from, to))
-  if (measured != null) return { kwh: measured, source: "measured" }
-  if (!settings.energyEstimate.enabled) return { kwh: null, source: "none" }
-  const duty = db.query<DutySample, [number, number]>(
-    "SELECT ts, nozzle_power, bed_power FROM samples WHERE ts BETWEEN ? AND ? ORDER BY ts",
+  const duty = db.query<DutySample & { watts: number | null }, [number, number]>(
+    "SELECT ts, nozzle_power, bed_power, watts FROM samples WHERE ts BETWEEN ? AND ? ORDER BY ts",
   ).all(from, to)
-  const est = integrateKwh(duty.map((d) => ({ ts: d.ts, watts: estimateWatts(d, settings.energyEstimate) })))
+  const metered = duty.filter((d) => d.watts != null).length
+  // Mostly metered: samples the plug missed (dropouts, plug installed mid-job) use the duty estimate
+  if (metered && metered >= 0.8 * duty.length) {
+    const e = settings.energyEstimate
+    const kwh = integrateKwh(duty.map((d) => ({ ts: d.ts, watts: d.watts ?? (e.enabled ? estimateWatts(d, e) : null) })))
+    return { kwh, source: "measured" }
+  }
+  if (!settings.energyEstimate.enabled) {
+    return metered ? { kwh: integrateKwh(duty), source: "measured" } : { kwh: null, source: "none" }
+  }
+  const est = integrateKwh(duty.map((d) => ({ ts: d.ts, watts: d.watts ?? estimateWatts(d, settings.energyEstimate) })))
   const span = Math.max(job.total_duration, (job.end ?? to) - job.start)
   if (est != null) {
     // Time the samples don't cover (service started mid-job, or was down) is filled at the average

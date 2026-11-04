@@ -297,6 +297,21 @@ export function startServer(db: Database, collector: Collector) {
         return json({ ok: true })
       }
       if (p === "/api/recalculate" && req.method === "POST") return json({ repriced: recalculateAll(db) })
+      if (p === "/api/power" && req.method === "POST") {
+        // JSON only, so a cross-site form post can't flip the switch
+        if (!req.headers.get("content-type")?.includes("application/json")) return json({ error: "expected JSON" }, 415)
+        const body = (await req.json().catch(() => null)) as { on?: unknown; force?: unknown } | null
+        if (typeof body?.on !== "boolean") return json({ error: "on must be true or false" }, 400)
+        const l = collector.live
+        if (!body.on && body.force !== true && l.online && (l.state === "printing" || l.state === "paused")) {
+          return json({ error: `the printer is ${l.state}` }, 409)
+        }
+        try {
+          return json(await collector.setPower(body.on))
+        } catch (err) {
+          return json({ error: (err as Error).message }, 502)
+        }
+      }
 
       return new Response("Not found", { status: 404 })
     },
