@@ -82,3 +82,23 @@ export function nav(active) {
     <a href="/" class="${active === "jobs" ? "active" : ""}">Jobs</a>
     <a href="/settings" class="${active === "settings" ? "active" : ""}">Settings</a></nav></header>`
 }
+
+// Rough everyday name for a filament colour (nearest of a short list)
+const COLOUR_NAMES = [
+  ["Black", 0, 0, 0], ["White", 255, 255, 255], ["Grey", 128, 128, 128], ["Light grey", 200, 200, 200], ["Dark grey", 64, 64, 64],
+  ["Red", 220, 30, 30], ["Orange", 255, 128, 0], ["Yellow", 250, 215, 0], ["Green", 40, 190, 70], ["Dark green", 0, 100, 0],
+  ["Teal", 0, 128, 128], ["Light blue", 100, 180, 240], ["Blue", 32, 48, 192], ["Navy", 20, 25, 90], ["Purple", 128, 40, 190],
+  ["Pink", 255, 105, 180], ["Brown", 120, 70, 30], ["Beige", 230, 215, 175],
+]
+export function colourName(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex ?? "")
+  if (!m) return "Unknown colour"
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16))
+  let best = COLOUR_NAMES[0], dist = Infinity
+  for (const c of COLOUR_NAMES) {
+    // Weighted RGB distance (approximates perceived difference)
+    const d = 2 * (r - c[1]) ** 2 + 4 * (g - c[2]) ** 2 + 3 * (b - c[3]) ** 2
+    if (d < dist) [best, dist] = [c, d]
+  }
+  return best[0]
+}

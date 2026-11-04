@@ -158,7 +158,26 @@ function summary(db: Database) {
     e.jobs++
     weeks.set(w, e)
   }
-  return { totals, weeks: [...weeks.values()].sort((a, b) => a.week - b.week) }
+  return { totals, weeks: [...weeks.values()].sort((a, b) => a.week - b.week), colours: colourTotals(db) }
+}
+
+// Filament used per colour and material across finished jobs, heaviest first
+function colourTotals(db: Database) {
+  const rows = db.query<{ colour: string | null; material: string; slot: string | null; name: string | null; grams: number;
+    cost: number; jobs: number; last_used: number }, []>(`
+    SELECT LOWER(f.colour) AS colour, f.material, SUM(f.actual_g) AS grams, SUM(f.cost) AS cost,
+      COUNT(DISTINCT COALESCE(j.merged_into, j.job_id)) AS jobs, MAX(j.start) AS last_used,
+      (SELECT f2.slot FROM job_filament f2 JOIN jobs j2 ON j2.job_id = f2.job_id
+        WHERE LOWER(f2.colour) IS LOWER(f.colour) AND f2.material = f.material AND f2.actual_g > 0.05
+        ORDER BY j2.start DESC LIMIT 1) AS slot,
+      (SELECT f3.name FROM job_filament f3 JOIN jobs j3 ON j3.job_id = f3.job_id
+        WHERE LOWER(f3.colour) IS LOWER(f.colour) AND f3.material = f.material AND f3.actual_g > 0.05
+        ORDER BY j3.start DESC LIMIT 1) AS name
+    FROM job_filament f JOIN jobs j ON j.job_id = f.job_id
+    WHERE j.status != 'in_progress' AND f.actual_g > 0.05
+    GROUP BY LOWER(f.colour), f.material
+    ORDER BY grams DESC`).all()
+  return rows
 }
 
 function samplesFor(db: Database, id: string) {

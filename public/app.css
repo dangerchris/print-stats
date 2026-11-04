@@ -130,6 +130,11 @@ tbody tr.link:hover { background: var(--surface-2); }
 .status.error::before, .status.klippy_shutdown::before, .status.klippy_disconnect::before, .status.interrupted::before { background: var(--critical); }
 .status.in_progress::before { background: var(--accent); }
 
+/* filament by colour */
+button.linkish { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font-size: 12px; }
+.share { width: 120px; height: 10px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.share > div { height: 100%; border-radius: 3px; box-shadow: inset 0 0 0 1px var(--border); min-width: 2px; }
+
 /* printer plug */
 .power { display: grid; grid-template-columns: auto 1fr auto; gap: 8px 24px; align-items: center; }
 .power-head { display: grid; gap: 2px; }

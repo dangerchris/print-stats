@@ -28,6 +28,11 @@
   </section>
   <section id="live" class="card" hidden></section>
   <section id="tiles" class="tiles"></section>
+  <section id="colours" class="card" hidden>
+    <h2>Filament by colour</h2>
+    <div class="table-wrap"><table id="colour-table"></table></div>
+    <p class="note">Finished jobs only. Weights are the extruder's actual use (including purge) split by the slicer's per-colour estimate. Slot is where that colour was most recently loaded.</p>
+  </section>
   <section class="charts">
     <div class="card"><h2>Cost per week</h2><div id="cost-week"></div></div>
     <div class="card"><h2>Filament per week</h2><div id="grams-week"></div></div>
@@ -53,7 +58,7 @@
   </section>
 </main>
 <script type="module">
-import { api, setCurrency, currency, money, energyMoney, grams, temp, duration, date, statusHtml, esc, swatches, tip, nav } from "/static/common.js"
+import { api, setCurrency, currency, colourName, money, energyMoney, grams, temp, duration, date, statusHtml, esc, swatches, tip, nav } from "/static/common.js"
 
 document.getElementById("nav").innerHTML = nav("jobs")
 let jobs = []
@@ -110,6 +115,36 @@ document.querySelector("#jobs tbody").onclick = (ev) => {
   if (tr) location.href = `/job?id=${encodeURIComponent(tr.dataset.id)}`
 }
 
+// Per-colour breakdown under the tiles, opened from the Filament tile (remembered per browser)
+let coloursOpen = false
+try { coloursOpen = localStorage.getItem("ps-colours") === "1" } catch {}
+function renderColours(rows) {
+  const total = rows.reduce((a, r) => a + r.grams, 0) || 1
+  document.getElementById("colour-table").innerHTML = `<thead><tr><th></th><th>Colour</th><th>Material</th><th>Slot</th>
+    <th class="r">Used</th><th class="hide-sm">Share</th><th class="r">Cost</th><th class="r hide-sm">Jobs</th><th class="hide-sm">Last used</th></tr></thead>
+    <tbody>${rows.map((r) => `<tr>
+      <td><span class="swatch" style="background:${esc(r.colour ?? "transparent")}"></span></td>
+      <td>${esc(colourName(r.colour))} <span class="muted">${esc(r.colour ?? "")}</span></td>
+      <td>${esc(r.material)}${r.name && r.name !== r.material ? ` <span class="muted">${esc(r.name)}</span>` : ""}</td>
+      <td>${esc(r.slot ?? "–")}</td>
+      <td class="r">${grams(r.grams)}</td>
+      <td class="hide-sm"><div class="share" title="${((r.grams / total) * 100).toFixed(0)}% of all filament">
+        <div style="width:${((r.grams / total) * 100).toFixed(1)}%;background:${esc(r.colour ?? "var(--muted)")}"></div></div></td>
+      <td class="r">${money(r.cost)}</td>
+      <td class="r hide-sm">${r.jobs}</td>
+      <td class="hide-sm">${date(r.last_used)}</td></tr>`).join("") || `<tr><td colspan="9" class="muted">No finished jobs yet.</td></tr>`}</tbody>`
+  const btn = document.getElementById("colours-btn")
+  const show = (open) => {
+    coloursOpen = open
+    document.getElementById("colours").hidden = !open
+    btn.setAttribute("aria-expanded", String(open))
+    btn.textContent = open ? "By colour ▾" : "By colour ▸"
+    try { localStorage.setItem("ps-colours", open ? "1" : "0") } catch {}
+  }
+  btn.onclick = () => show(!coloursOpen)
+  show(coloursOpen)
+}
+
 async function loadSummary() {
   const [s, list] = await Promise.all([api("/api/summary"), api("/api/jobs")])
   setCurrency(s.currency)
@@ -118,12 +153,13 @@ async function loadSummary() {
   document.getElementById("tiles").innerHTML = [
     tile("Jobs", t.jobs, `${t.completed} completed`),
     tile("Print time", `${t.print_hours.toFixed(1)} h`),
-    tile("Filament", grams(t.filament_g), `${grams(t.wasted_g)} on failed/cancelled`),
+    tile("Filament", grams(t.filament_g), `${grams(t.wasted_g)} on failed/cancelled<br><button type="button" class="linkish" id="colours-btn" aria-expanded="false" aria-controls="colours">By colour ▸</button>`),
     tile("Total cost", money(t.total_cost), t.energy_cost == null ? "filament only"
       : `incl. ${t.energy_estimated ? "~" : ""}${money(t.energy_cost)} electricity${t.energy_estimated ? " (estimated)" : ""}`),
     t.energy_kwh != null ? tile("Electricity", `${t.energy_estimated ? "~" : ""}${t.energy_kwh.toFixed(1)} kWh`, money(t.energy_cost)) : "",
     tile("Average per job", money(t.jobs ? t.total_cost / t.jobs : 0)),
   ].join("")
+  renderColours(s.colours ?? [])
   bars(document.getElementById("cost-week"), s.weeks, "cost", money)
   bars(document.getElementById("grams-week"), s.weeks, "grams", grams)
   renderJobs()

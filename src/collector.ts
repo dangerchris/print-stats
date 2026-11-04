@@ -51,7 +51,13 @@ export class Collector {
   private backoffUntil = 0
   private timer: Timer | null = null
 
-  constructor(private db: Database, private power: PowerSource) {}
+  constructor(private db: Database, private power: PowerSource) {
+    // Restarts (deploys) would otherwise blank the dashboard's power line; samples hold the plug's
+    // watts whenever the printer was online
+    const since = Date.now() / 1000 - 900
+    this.plugRecent = db.query<{ ts: number; watts: number }, [number]>(
+      "SELECT ts, watts FROM samples WHERE ts > ? AND watts IS NOT NULL ORDER BY ts").all(since).map((r) => [Math.round(r.ts), r.watts])
+  }
 
   start(): void {
     const loop = async () => {
