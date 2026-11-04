@@ -65,10 +65,12 @@ document.getElementById("tiles").innerHTML = [
   tile("Total cost", money(j.total_cost), j.energy_cost == null ? "filament only" : j.energy_source === "measured" ? "" : "electricity estimated"),
   tile("Filament", money(j.material_cost), grams(j.filament_g) + (estG ? ` (slicer ${grams(estG)})` : "")),
   tile("Electricity", energyMoney(j.energy_cost, j.energy_source),
-    j.energy_kwh == null ? "no power meter" : `${j.energy_kwh.toFixed(3)} kWh, ${ENERGY_NOTE[j.energy_source] ?? ""}`),
+    j.energy_kwh == null ? "no power meter" : `${j.energy_kwh.toFixed(3)} kWh${j.energy_kwh > 0 && j.energy_cost != null
+      ? ` at an average ${(j.energy_cost / j.energy_kwh).toFixed(3)}/kWh` : ""}, ${ENERGY_NOTE[j.energy_source] ?? ""}`),
   j.machine_cost ? tile("Machine time", money(j.machine_cost)) : "",
   tile("Print time", duration(j.print_duration), est ? `slicer estimate ${duration(est)}` : ""),
   tile("Total time", duration(j.total_duration), "incl. heating and calibration"),
+  j.prep_start ? tile("Preparation", duration(j.start - j.prep_start), "heating and levelling before the file started") : "",
 ].join("")
 
 // media
@@ -127,11 +129,33 @@ function chart(elId, series, data, yFmt, height = 260) {
     scales: { x: { time: true } },
     axes: [axisStyle(), { ...axisStyle(), values: (u, v) => v.map(yFmt), size: 50 }],
     series: [{ value: (u, v) => (v == null ? "–" : new Date(v * 1000).toLocaleTimeString()) }, ...series],
-    plugins: [tooltipPlugin(yFmt)],
+    plugins: [tooltipPlugin(yFmt), prepBand()],
   }
   const u = new uPlot(opts, data, el)
   charts.push([u, el])
   return u
+}
+
+// Shades the preparation phase (heating and levelling before the file started)
+function prepBand() {
+  return {
+    hooks: {
+      drawClear: (u) => {
+        if (!j.prep_start) return
+        const x0 = u.valToPos(j.prep_start, "x", true)
+        const x1 = u.valToPos(j.start, "x", true)
+        const { top, height } = u.bbox
+        const ctx = u.ctx
+        ctx.save()
+        ctx.fillStyle = cssVar("--surface-2")
+        ctx.fillRect(x0, top, x1 - x0, height)
+        ctx.fillStyle = cssVar("--muted")
+        ctx.font = `${11 * devicePixelRatio}px system-ui, sans-serif`
+        if (x1 - x0 > 40 * devicePixelRatio) ctx.fillText("Prep", x0 + 4 * devicePixelRatio, top + 14 * devicePixelRatio)
+        ctx.restore()
+      },
+    },
+  }
 }
 
 // Crosshair tooltip listing every series at the hovered time

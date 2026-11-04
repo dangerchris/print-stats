@@ -14,6 +14,7 @@
       <div class="power-head">
         <span class="status" id="plug-state"></span>
         <span class="power-now"><b class="num" id="plug-watts">–</b> <span class="muted" id="plug-volts"></span></span>
+        <span class="muted num" id="plug-rate"></span>
       </div>
       <div class="spark-wrap">
         <svg id="plug-spark" class="spark" viewBox="0 0 300 40" preserveAspectRatio="none" aria-label="Printer power, last 15 minutes"></svg>
@@ -52,7 +53,7 @@
   </section>
 </main>
 <script type="module">
-import { api, setCurrency, money, energyMoney, grams, temp, duration, date, statusHtml, esc, swatches, tip, nav } from "/static/common.js"
+import { api, setCurrency, currency, money, energyMoney, grams, temp, duration, date, statusHtml, esc, swatches, tip, nav } from "/static/common.js"
 
 document.getElementById("nav").innerHTML = nav("jobs")
 let jobs = []
@@ -131,7 +132,7 @@ async function loadSummary() {
 // Printer plug: state, live watts, a 15 min sparkline and the on/off switch
 let live = null
 let switching = false
-const plugEls = Object.fromEntries(["power", "plug-state", "plug-watts", "plug-volts", "plug-spark", "plug-peak", "plug-btn", "plug-msg"]
+const plugEls = Object.fromEntries(["power", "plug-state", "plug-watts", "plug-volts", "plug-rate", "plug-spark", "plug-peak", "plug-btn", "plug-msg"]
   .map((id) => [id, document.getElementById(id)]))
 
 function renderPower(l) {
@@ -145,6 +146,14 @@ function renderPower(l) {
   st.textContent = !responding ? "Plug not responding" : p.on ? "Printer on" : "Printer off"
   plugEls["plug-watts"].textContent = responding ? `${p.watts.toFixed(p.watts < 100 ? 1 : 0)} W` : "–"
   plugEls["plug-volts"].textContent = responding && p.volts ? `${p.volts.toFixed(0)} V` : ""
+  const r = l.rate
+  if (r) {
+    const until = r.until ? ` until ${new Date(r.until * 1000).toLocaleString(undefined,
+      r.until - Date.now() / 1000 > 18 * 3600 ? { weekday: "short", hour: "numeric", minute: "2-digit" } : { hour: "numeric", minute: "2-digit" })}` : ""
+    // What running at this draw costs per hour right now
+    const perHour = responding ? ` · ${((p.watts / 1000) * r.rate * 100).toFixed(2)}¢/h at this draw` : ""
+    plugEls["plug-rate"].textContent = `${r.label} ${currency}${r.rate.toFixed(3)}/kWh${until}${perHour}`
+  }
   const btn = plugEls["plug-btn"]
   btn.hidden = !p.canSwitch
   if (!switching) {
@@ -214,6 +223,20 @@ async function loadLive() {
   renderPower(l)
   const el = document.getElementById("live")
   const active = l.online && (l.state === "printing" || l.state === "paused" || l.jobId)
+  if (!active && l.online && l.preparing) {
+    // Before the file starts the printer doesn't say what it will print
+    const t = l.temps
+    el.hidden = false
+    el.innerHTML = `<div class="live"><div>
+      <div class="name">Preparing to print <span class="status in_progress">Preparing</span></div>
+      <div class="live-stats"><span>Heating and levelling for <b class="num">${duration(Date.now() / 1000 - l.preparing.since)}</b></span>
+        <span class="muted">The job appears here once the file starts.</span></div></div>
+      <div class="temps">
+        <span class="k"><span class="key" style="background:var(--s1)"></span>Nozzle</span><span>${temp(t.nozzle?.temp)} / ${temp(t.nozzle?.target)}</span>
+        <span class="k"><span class="key" style="background:var(--s2)"></span>Bed</span><span>${temp(t.bed?.temp)} / ${temp(t.bed?.target)}</span>
+      </div></div>`
+    return l
+  }
   el.hidden = !active
   if (!active) return l
   const pct = (l.progress ?? 0) * 100

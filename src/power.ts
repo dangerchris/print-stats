@@ -151,7 +151,15 @@ export function estimateWatts(s: DutySample, e: { baseWatts: number; nozzleWatts
 
 // kWh from watt samples (trapezoid), ignoring gaps longer than maxGap seconds
 export function integrateKwh(samples: { ts: number; watts: number | null }[], maxGap = 60): number | null {
+  return integrateEnergy(samples, () => 0, maxGap)?.kwh ?? null
+}
+
+// kWh and cost together, each interval priced at the rate in force at its midpoint
+export function integrateEnergy(samples: { ts: number; watts: number | null }[], rate: (ts: number) => number, maxGap = 60):
+  { kwh: number; cost: number; covered: number } | null {
   let wh = 0
+  let cost = 0
+  let covered = 0
   let any = false
   for (let i = 1; i < samples.length; i++) {
     const a = samples[i - 1]
@@ -159,8 +167,11 @@ export function integrateKwh(samples: { ts: number; watts: number | null }[], ma
     if (a.watts == null || b.watts == null) continue
     const dt = b.ts - a.ts
     if (dt <= 0 || dt > maxGap) continue
-    wh += ((a.watts + b.watts) / 2) * (dt / 3600)
+    const segWh = ((a.watts + b.watts) / 2) * (dt / 3600)
+    wh += segWh
+    cost += (segWh / 1000) * rate((a.ts + b.ts) / 2)
+    covered += dt
     any = true
   }
-  return any ? wh / 1000 : null
+  return any ? { kwh: wh / 1000, cost, covered } : null
 }

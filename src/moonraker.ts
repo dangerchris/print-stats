@@ -22,6 +22,9 @@ export const OBJECTS = [
   "temperature_fan chamber_fan",
   "temperature_sensor chamber_temp",
   "pause_resume",
+  // Logged for now, to see whether either marks print preparation more reliably than heater targets
+  "idle_timeout",
+  "gcode_macro START_PRINT",
 ]
 
 async function get(path: string, timeoutMs = 8000): Promise<any> {

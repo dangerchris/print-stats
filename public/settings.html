@@ -14,11 +14,27 @@
       <h2>General</h2>
       <div class="form-grid">
         <label>Currency symbol <input type="text" name="currency" maxlength="4" required></label>
-        <label>Electricity (per kWh) <input type="number" name="kwhRate" step="0.001" min="0" required></label>
+        <label>Flat electricity rate (per kWh) <input type="number" name="kwhRate" step="0.001" min="0" required></label>
         <label>Machine time (per hour) <input type="number" name="machinePerHour" step="0.01" min="0" required></label>
         <label>Filament diameter (mm) <input type="number" name="diameter" step="0.01" min="0.5" required></label>
       </div>
       <p class="note">Machine time covers wear and depreciation; leave at 0 to count only filament and electricity.</p>
+    </section>
+    <section class="card">
+      <h2>Time-of-use electricity</h2>
+      <p class="note">Each power reading is charged at the rate in force when it was taken. Weekends are off-peak all day, and so are holidays if a holiday list is selected. Weekday hours are 24-hour ranges with the end hour excluded, e.g. <code>7-11,17-19</code>; any hour not listed is off-peak. When this is off, the flat rate above applies.</p>
+      <div class="form-grid">
+        <label>Time-of-use pricing <select name="touEnabled"><option value="1">On</option><option value="0">Off</option></select></label>
+        <label>Off-peak (per kWh) <input type="number" name="touOff" step="0.001" min="0" required></label>
+        <label>Mid-peak (per kWh) <input type="number" name="touMid" step="0.001" min="0" required></label>
+        <label>On-peak (per kWh) <input type="number" name="touOn" step="0.001" min="0" required></label>
+        <label>Winter on-peak hours (Nov–Apr) <input type="text" name="winterOn"></label>
+        <label>Winter mid-peak hours <input type="text" name="winterMid"></label>
+        <label>Summer on-peak hours (May–Oct) <input type="text" name="summerOn"></label>
+        <label>Summer mid-peak hours <input type="text" name="summerMid"></label>
+        <label>Holidays (off-peak all day) <select name="touHolidays"><option value="ontario">Ontario (OEB list)</option><option value="none">None</option></select></label>
+        <label>Time zone <input type="text" name="touTimeZone" required></label>
+      </div>
     </section>
     <section class="card">
       <h2>Energy estimate</h2>
@@ -56,6 +72,18 @@ const { settings, cfs } = await api("/api/settings")
 for (const k of ["currency", "kwhRate", "machinePerHour", "diameter"]) form.elements[k].value = settings[k]
 for (const k of ["baseWatts", "nozzleWatts", "bedWatts"]) form.elements[k].value = settings.energyEstimate[k]
 form.elements.estEnabled.value = settings.energyEstimate.enabled ? "1" : "0"
+const tou = settings.tou
+const TOU_FIELDS = { touOff: () => tou.rates.off, touMid: () => tou.rates.mid, touOn: () => tou.rates.on,
+  winterOn: () => tou.winter.on, winterMid: () => tou.winter.mid, summerOn: () => tou.summer.on, summerMid: () => tou.summer.mid,
+  touHolidays: () => tou.holidays, touTimeZone: () => tou.timeZone }
+for (const [k, get] of Object.entries(TOU_FIELDS)) form.elements[k].value = get()
+form.elements.touEnabled.value = tou.enabled ? "1" : "0"
+// Hour ranges: "7-11,17-19" (end hour excluded)
+for (const k of ["winterOn", "winterMid", "summerOn", "summerMid"]) {
+  const el = form.elements[k]
+  el.pattern = "\\s*\\d{1,2}\\s*-\\s*\\d{1,2}\\s*(,\\s*\\d{1,2}\\s*-\\s*\\d{1,2}\\s*)*|\\s*"
+  el.title = "Hour ranges like 7-11,17-19 (end hour excluded); leave empty for none"
+}
 
 const matTable = document.getElementById("materials")
 function renderMaterials(mats) {
@@ -111,6 +139,14 @@ function collect() {
       baseWatts: Number(form.elements.baseWatts.value),
       nozzleWatts: Number(form.elements.nozzleWatts.value),
       bedWatts: Number(form.elements.bedWatts.value),
+    },
+    tou: {
+      enabled: form.elements.touEnabled.value === "1",
+      timeZone: form.elements.touTimeZone.value.trim(),
+      rates: { off: Number(form.elements.touOff.value), mid: Number(form.elements.touMid.value), on: Number(form.elements.touOn.value) },
+      winter: { on: form.elements.winterOn.value.trim(), mid: form.elements.winterMid.value.trim() },
+      summer: { on: form.elements.summerOn.value.trim(), mid: form.elements.summerMid.value.trim() },
+      holidays: form.elements.touHolidays.value,
     },
   }
 }

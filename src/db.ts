@@ -14,6 +14,7 @@ export interface JobRow {
   filament_g: number | null
   merged_into: string | null
   creality_start: number | null
+  prep_start: number | null // Creality's print preparation (heat, level, wipe) before the file started
   slicer_json: string | null
   cfs_json: string | null
   material_cost: number | null
@@ -61,6 +62,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   filament_g REAL,
   merged_into TEXT,
   creality_start REAL,
+  prep_start REAL,
   slicer_json TEXT,
   cfs_json TEXT,
   material_cost REAL,
@@ -117,7 +119,14 @@ export function openDb(file: string): Database {
   const db = new Database(file, { create: true })
   db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;")
   db.exec(SCHEMA)
+  migrate(db)
   return db
+}
+
+// Columns added after the first deploy
+function migrate(db: Database): void {
+  const cols = new Set(db.query<{ name: string }, []>("PRAGMA table_info(jobs)").all().map((c) => c.name))
+  if (!cols.has("prep_start")) db.exec("ALTER TABLE jobs ADD COLUMN prep_start REAL")
 }
 
 export function memoryDb(): Database {

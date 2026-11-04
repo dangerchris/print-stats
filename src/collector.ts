@@ -3,7 +3,7 @@ import { config } from "./config"
 import { getJob, updateJob, type JobRow } from "./db"
 import { cfsFromStatus, cfsStateFromStatus, loadSettings, priceJob, type CfsSlot, type CfsState } from "./cost"
 import { slicerFromLive, type SlicerInfo } from "./gcode"
-import { finalizeJob, groupId, linkFragment, upsertHistoryJob, ensureSlicer, parseCfs, jobEnergy } from "./jobs"
+import { finalizeJob, groupId, linkFragment, upsertHistoryJob, ensureSlicer, parseCfs, jobEnergy, ensurePrep, detectPrep, looksLikePrep } from "./jobs"
 import { captureFrame, mediaSweep, saveFinalSnapshot } from "./media"
 import { historyList, queryObjects } from "./moonraker"
 import type { PowerReading, PowerSource } from "./power"
@@ -25,9 +25,12 @@ export interface LiveState {
   temps: Record<string, { temp: number | null; target: number | null; power?: number | null }>
   watts: number | null
   energyKwh: number | null
+  energyCost: number | null
   energySource: string | null
   cfs: CfsSlot[]
   // The smart plug, read even while the printer is off; null when there is no plug
+  // Print preparation in progress (standby, heaters at probing temperatures) and when it began
+  preparing: { since: number } | null
   plug: { on: boolean | null; watts: number | null; volts: number | null; at: number; canSwitch: boolean; recent: [number, number][] } | null
 }
 
@@ -37,9 +40,10 @@ export class Collector {
   live: LiveState = {
     online: false, updatedAt: 0, state: null, filename: null, jobId: null, progress: null, layer: null,
     layerCount: null, printDuration: null, estTime: null, filamentMm: null, filamentG: null, cost: null,
-    temps: {}, watts: null, energyKwh: null, energySource: null, cfs: [], plug: null,
+    temps: {}, watts: null, energyKwh: null, energyCost: null, energySource: null, cfs: [], plug: null, preparing: null,
   }
   private lastState: string | null = null
+  private lastFlags = ""
   private lastLayer: number | null = null
   private lastFrameAt = 0
   private lastReconcile = 0
@@ -105,6 +109,11 @@ export class Collector {
     this.recordSample(status, reading?.watts ?? null)
 
     const state: string = status.print_stats?.state ?? "unknown"
+    const flags = `idle_timeout=${status.idle_timeout?.state} START_PRINT.prepare=${JSON.stringify(status["gcode_macro START_PRINT"]?.prepare)}`
+    if (flags !== this.lastFlags) {
+      console.log(`[collector] ${flags} (print_stats ${state}, nozzle target ${status.extruder?.target}, bed target ${status.heater_bed?.target})`)
+      this.lastFlags = flags
+    }
     const changed = state !== this.lastState
     if (changed) console.log(`[collector] print_stats ${this.lastState} -> ${state}`)
     const prevJobId = this.live.jobId
@@ -182,6 +191,7 @@ export class Collector {
     this.live.jobId = liveJob?.job_id ?? null
     const energy = liveJob ? jobEnergy(this.db, getJob(this.db, liveJob.job_id)!, loadSettings(this.db)) : null
     this.live.energyKwh = energy?.kwh ?? null
+    this.live.energyCost = energy?.cost ?? null
     this.live.energySource = energy?.source ?? null
   }
 
@@ -191,8 +201,10 @@ export class Collector {
     const live = cur && cur.status === "in_progress" && cur.filename === job.filename.split("/").pop() ? cur : null
     if (live?.start_time) fields.creality_start = live.start_time
     updateJob(this.db, job.job_id, fields)
-    const updated = getJob(this.db, job.job_id)!
+    let updated = getJob(this.db, job.job_id)!
     linkFragment(this.db, updated)
+    updated = ensurePrep(this.db, getJob(this.db, job.job_id)!)
+    if (updated.prep_start) console.log(`[collector] job ${job.job_id} prepared for ${Math.round(updated.start - updated.prep_start)} s`)
     console.log(`[collector] tracking job ${job.job_id} ${job.filename}`)
     await ensureSlicer(this.db, updated, slicerFromLive(live?.metadata))
   }
@@ -208,13 +220,20 @@ export class Collector {
     let cost: number | null = null
     if (active && num(ps.filament_used) != null) {
       const jobCfs = job?.cfs_json ? parseCfs(job.cfs_json) : cfsStateFromStatus(s.box, s.filament_rack)
-      const priced = priceJob({ filament_mm: ps.filament_used, total_duration: ps.total_duration ?? 0, energy_kwh: this.live.energyKwh, slicer, cfs: jobCfs }, loadSettings(this.db))
+      const priced = priceJob({ filament_mm: ps.filament_used, total_duration: ps.total_duration ?? 0, energy_kwh: this.live.energyKwh, energy_cost: this.live.energyCost, slicer, cfs: jobCfs }, loadSettings(this.db))
       filamentG = priced.filament_g
       cost = priced.total_cost
     }
     const chamberFan = s["temperature_fan chamber_fan"] ?? {}
+    let preparing: LiveState["preparing"] = null
+    if (!this.live.jobId && looksLikePrep(ps.state ?? null, num(s.extruder?.target), num(s.heater_bed?.target))) {
+      // When it began: the run of heating samples just recorded, else now
+      preparing = this.live.preparing ?? { since: detectPrep(this.db, Date.now() / 1000 + 1) ?? Date.now() / 1000 }
+    }
+    if (preparing && !this.live.preparing) console.log("[collector] printer is preparing a print")
     this.live = {
       ...this.live,
+      preparing,
       updatedAt: Date.now() / 1000,
       state: ps.state ?? null,
       filename: ps.filename || null,
@@ -240,7 +259,7 @@ export class Collector {
   private maintenance(): void {
     const cutoff = Date.now() / 1000 - 30 * 86400
     const res = this.db.query(`DELETE FROM samples WHERE ts < ? AND (CAST(ts AS INTEGER) % 60) >= 5
-      AND NOT EXISTS (SELECT 1 FROM jobs WHERE samples.ts BETWEEN COALESCE(jobs.creality_start, jobs.start - 600) AND COALESCE(jobs.end, 1e12))`).run(cutoff)
+      AND NOT EXISTS (SELECT 1 FROM jobs WHERE samples.ts BETWEEN COALESCE(jobs.prep_start, jobs.creality_start, jobs.start - 600) AND COALESCE(jobs.end, 1e12))`).run(cutoff)
     if (res.changes) console.log(`[collector] thinned ${res.changes} old samples`)
   }
 }

@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite"
 import { normColour, type SlicerInfo } from "./gcode"
+import { DEFAULT_TOU, type TouSettings } from "./tou"
 
 export interface CfsSlot {
   slot: string // T1A..T4D, or EXT for the side spool holder
@@ -42,6 +43,7 @@ export interface Settings {
   materials: Record<string, MaterialSetting>
   slotOverrides: SlotOverride[]
   energyEstimate: EnergyEstimate
+  tou: TouSettings // time-of-use rates; kwhRate applies when disabled
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -61,6 +63,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // Base K2 at 110 V is rated 450 W. Its bed runs at Klipper max_power 0.5, so 700 W at full duty is
   // ~350 W peak; with a 70 W hotend and ~40 W base load that totals the rated figure.
   energyEstimate: { enabled: true, baseWatts: 40, nozzleWatts: 70, bedWatts: 700 },
+  tou: DEFAULT_TOU,
 }
 
 export function loadSettings(db: Database): Settings {
@@ -72,6 +75,7 @@ export function loadSettings(db: Database): Settings {
     ...saved,
     materials: { ...DEFAULT_SETTINGS.materials, ...saved.materials },
     energyEstimate: { ...DEFAULT_SETTINGS.energyEstimate, ...saved.energyEstimate },
+    tou: { ...DEFAULT_SETTINGS.tou, ...saved.tou },
   }
 }
 
@@ -149,6 +153,7 @@ export interface PriceInput {
   filament_mm: number
   total_duration: number
   energy_kwh: number | null
+  energy_cost?: number | null // already priced by time of use; otherwise energy_kwh x kwhRate
   slicer: SlicerInfo | null
   cfs: CfsState
 }
@@ -183,7 +188,7 @@ export function priceJob(job: PriceInput, s: Settings): PricedJob {
   })
   const filament_g = filaments.reduce((a, f) => a + f.actual_g, 0)
   const material_cost = filaments.reduce((a, f) => a + f.cost, 0)
-  const energy_cost = job.energy_kwh == null ? null : job.energy_kwh * s.kwhRate
+  const energy_cost = job.energy_kwh == null ? null : job.energy_cost ?? job.energy_kwh * s.kwhRate
   const machine_cost = (s.machinePerHour * job.total_duration) / 3600
   return {
     filaments,

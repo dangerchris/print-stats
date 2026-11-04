@@ -8,6 +8,7 @@ import type { FilamentRow, JobRow } from "./db"
 import { loadSettings, saveSettings, type Settings } from "./cost"
 import { groupId, jobWindow, recalculateAll } from "./jobs"
 import { estimateWatts } from "./power"
+import { BAND_LABEL, bandAt, validTou } from "./tou"
 import type { Collector } from "./collector"
 
 // ---- auth: LAN is open; requests through the cloudflared tunnel need a password session ----
@@ -61,6 +62,7 @@ interface JobGroup {
   status: string
   start: number
   end: number | null
+  prep_start: number | null
   print_duration: number
   total_duration: number
   filament_g: number
@@ -93,7 +95,7 @@ function groups(db: Database, where = "1=1", params: any[] = []): JobGroup[] {
       const thumb = root.snapshot ?? root.cover ?? root.thumb
       g = {
         id, name: prettyName(r.filename), filename: r.filename, status: r.status, start: r.start, end: r.end,
-        print_duration: 0, total_duration: 0, filament_g: 0, material_cost: 0, energy_kwh: null, energy_cost: null,
+        prep_start: root.prep_start, print_duration: 0, total_duration: 0, filament_g: 0, material_cost: 0, energy_kwh: null, energy_cost: null,
         energy_source: "none", machine_cost: 0, total_cost: 0,
         thumb: mediaUrl(id, thumb), snapshot: mediaUrl(id, root.snapshot), video: mediaUrl(id, root.video),
         video_source: root.video_source, media_state: root.media_state, fragments: [], filaments: [],
@@ -201,7 +203,18 @@ function validSettings(s: any): s is Settings {
     Object.values(s.materials).every((m: any) => m.pricePerKg >= 0 && m.density > 0) &&
     Array.isArray(s.slotOverrides) && s.slotOverrides.every((o: any) => typeof o.slot === "string" && o.pricePerKg >= 0) &&
     s.energyEstimate && typeof s.energyEstimate.enabled === "boolean" &&
-    ["baseWatts", "nozzleWatts", "bedWatts"].every((k) => s.energyEstimate[k] >= 0)
+    ["baseWatts", "nozzleWatts", "bedWatts"].every((k) => s.energyEstimate[k] >= 0) && validTou(s.tou)
+}
+
+// The electricity rate in force now, for the dashboard
+function rateNow(s: Settings) {
+  const now = Date.now() / 1000
+  if (!s.tou.enabled) return { tou: false, band: null, label: "Flat rate", rate: s.kwhRate }
+  const band = bandAt(now, s.tou)
+  // When the band next changes (bands move on whole hours)
+  let until = (Math.floor(now / 3600) + 1) * 3600
+  while (bandAt(until, s.tou) === band && until - now < 7 * 86400) until += 3600
+  return { tou: true, band, label: BAND_LABEL[band], rate: s.tou.rates[band], until }
 }
 
 function serveFile(req: Request, file: string): Response {
@@ -265,7 +278,10 @@ export function startServer(db: Database, collector: Collector) {
         return serveFile(req, path.join(config.mediaDir, group, file))
       }
 
-      if (p === "/api/live") return json({ ...collector.live, currency: loadSettings(db).currency })
+      if (p === "/api/live") {
+        const s = loadSettings(db)
+        return json({ ...collector.live, currency: s.currency, rate: rateNow(s) })
+      }
       if (p === "/api/summary") return json({ ...summary(db), currency: loadSettings(db).currency })
       if (p === "/api/jobs") return json(groups(db).reverse())
 

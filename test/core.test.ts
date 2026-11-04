@@ -208,3 +208,73 @@ describe("energy estimate", () => {
     expect(jobEnergy(db, getJob(db, "1")!, { ...s, energyEstimate: { ...s.energyEstimate, enabled: false } }).kwh).toBeNull()
   })
 })
+
+describe("time of use", () => {
+  const { bandAt, ontarioHolidays, rateAt, spanCost, DEFAULT_TOU } = require("../src/tou")
+  // Local Toronto wall-clock time to epoch seconds (EST is UTC-5, EDT UTC-4)
+  const at = (iso: string) => Date.parse(iso) / 1000
+
+  test("winter weekday bands", () => {
+    expect(bandAt(at("2026-11-04T06:30:00-05:00"), DEFAULT_TOU)).toBe("off")
+    expect(bandAt(at("2026-11-04T07:00:00-05:00"), DEFAULT_TOU)).toBe("on")
+    expect(bandAt(at("2026-11-04T12:00:00-05:00"), DEFAULT_TOU)).toBe("mid")
+    expect(bandAt(at("2026-11-04T18:59:00-05:00"), DEFAULT_TOU)).toBe("on")
+    expect(bandAt(at("2026-11-04T19:00:00-05:00"), DEFAULT_TOU)).toBe("off")
+  })
+
+  test("summer weekday bands", () => {
+    expect(bandAt(at("2026-07-15T08:00:00-04:00"), DEFAULT_TOU)).toBe("mid")
+    expect(bandAt(at("2026-07-15T13:00:00-04:00"), DEFAULT_TOU)).toBe("on")
+  })
+
+  test("weekends and holidays are off-peak", () => {
+    expect(bandAt(at("2026-11-07T12:00:00-05:00"), DEFAULT_TOU)).toBe("off") // Saturday
+    expect(bandAt(at("2026-04-03T12:00:00-04:00"), DEFAULT_TOU)).toBe("off") // Good Friday
+    expect(bandAt(at("2026-10-12T12:00:00-04:00"), DEFAULT_TOU)).toBe("off") // Thanksgiving
+    const h2027 = ontarioHolidays(2027)
+    expect(h2027.has("2027-12-27")).toBe(true) // Christmas on Saturday, observed Monday
+    expect(h2027.has("2027-12-28")).toBe(true) // Boxing Day on Sunday, observed Tuesday
+    expect(ontarioHolidays(2028).has("2028-07-03")).toBe(true) // Canada Day on Saturday
+    expect(ontarioHolidays(2026).has("2026-05-18")).toBe(true) // Victoria Day
+    expect(ontarioHolidays(2026).has("2026-02-16")).toBe(true) // Family Day
+  })
+
+  test("rates and span pricing", () => {
+    const s = { kwhRate: 0.13, tou: DEFAULT_TOU }
+    expect(rateAt(at("2026-11-04T12:00:00-05:00"), s)).toBe(0.157)
+    expect(rateAt(at("2026-11-04T12:00:00-05:00"), { ...s, tou: { ...DEFAULT_TOU, enabled: false } })).toBe(0.13)
+    // 1 kW from 18:00 to 20:00 on a winter weekday: one on-peak hour, one off-peak hour
+    expect(spanCost(at("2026-11-04T18:00:00-05:00"), at("2026-11-04T20:00:00-05:00"), 1000, s)).toBeCloseTo(0.203 + 0.098, 6)
+  })
+})
+
+describe("print preparation", () => {
+  const { detectPrep, looksLikePrep } = require("../src/jobs")
+  const ins = (db: any, ts: number, state: string, nozzle: number, bed: number) =>
+    db.query("INSERT INTO samples (ts, state, nozzle_target, bed_target) VALUES (?, ?, ?, ?)").run(ts, state, nozzle, bed)
+
+  test("finds the heating run that ends at the print start", () => {
+    const db = memoryDb()
+    for (let t = 0; t < 300; t += 5) ins(db, t, "complete", 0, 0) // previous job finished, heaters off
+    for (let t = 300; t < 600; t += 5) ins(db, t, "standby", t < 360 ? 180 : 140, 60) // prep, as on job 000010
+    ins(db, 599.5, "printing", 0, 0) // sampled just before Moonraker's start time
+    expect(detectPrep(db, 600)).toBe(300)
+  })
+
+  test("needs heating right up to the start", () => {
+    const db = memoryDb()
+    for (let t = 0; t < 300; t += 5) ins(db, t, "standby", 140, 60)
+    for (let t = 300; t < 600; t += 5) ins(db, t, "standby", 0, 0) // heaters off again before the print
+    expect(detectPrep(db, 600)).toBeNull()
+    const gap = memoryDb()
+    for (let t = 0; t < 300; t += 5) ins(gap, t, "standby", 140, 60)
+    expect(detectPrep(gap, 600)).toBeNull() // last sample is 5 min before the start
+  })
+
+  test("live heuristic tells prep from filament loading", () => {
+    expect(looksLikePrep("standby", 140, 60)).toBe(true)
+    expect(looksLikePrep("standby", 220, 0)).toBe(false) // loading filament
+    expect(looksLikePrep("standby", 0, 0)).toBe(false) // power-on self-check
+    expect(looksLikePrep("printing", 140, 60)).toBe(false)
+  })
+})
