@@ -36,40 +36,37 @@ function withTimeout<T>(p: Promise<T>, label: string): Promise<T> {
   return Promise.race([p, t]).finally(() => clearTimeout(timer))
 }
 
-// Keeps one connection open (the plug accepts only one at a time) and asks for its datapoints on
-// each read. A failed read drops the connection and retries after RECONNECT_MS.
+// Connects for each read or switch and disconnects straight after. The plug accepts only one
+// local connection at a time, and cottage-mon reads it too, so neither may hold it open. A
+// 3.3 connection is a plain TCP connect with no session handshake, so this is cheap. When
+// both connect at once one read fails; only FAILURES_BEFORE_BACKOFF failures in a row (the
+// plug unplugged or off the network) pause reads for RECONNECT_MS.
+const FAILURES_BEFORE_BACKOFF = 3
+
 export class TuyaPower implements PowerSource {
   name: string
-  private device: TuyAPI | null = null
   private retryAt = 0
-  private failing = false
+  private failures = 0
 
   constructor(private opts: { id: string; key: string; ip: string; version: string }) {
     this.name = `tuya ${opts.ip}`
   }
 
-  private async connect(): Promise<TuyAPI> {
-    if (this.device?.isConnected()) return this.device
-    this.drop()
+  // Run fn on a fresh connection, always disconnecting afterwards
+  private async withDevice<T>(fn: (d: TuyAPI) => Promise<T>): Promise<T> {
     const d = new TuyAPI({ id: this.opts.id, key: this.opts.key, ip: this.opts.ip, version: this.opts.version, issueGetOnConnect: false })
     d.on("error", () => {}) // surfaced through the rejected calls
-    d.on("disconnected", () => {
-      if (this.device === d) this.device = null
-    })
-    this.device = d
-    await withTimeout(d.connect(), "connect")
-    return d
-  }
-
-  private drop(): void {
-    const d = this.device
-    this.device = null
     try {
-      d?.disconnect()
-    } catch {}
+      await withTimeout(d.connect(), "connect")
+      return await fn(d)
+    } finally {
+      try {
+        d.disconnect()
+      } catch {}
+    }
   }
 
-  // One command at a time on the shared connection
+  // One command at a time, so this app never holds two connections
   private queue: Promise<unknown> = Promise.resolve()
   private serial<T>(fn: () => Promise<T>): Promise<T> {
     const next = this.queue.then(fn, fn)
@@ -77,8 +74,7 @@ export class TuyaPower implements PowerSource {
     return next
   }
 
-  private async fetchReading(): Promise<PowerReading> {
-    const d = await this.connect()
+  private async fetchReading(d: TuyAPI): Promise<PowerReading> {
     const status = (await withTimeout(d.get({ schema: true }), "get")) as { dps?: Record<string, unknown> }
     const dps = status?.dps ?? {}
     if (typeof dps[POWER_DPS] !== "number") throw new Error("no power datapoint")
@@ -89,20 +85,26 @@ export class TuyaPower implements PowerSource {
     }
   }
 
+  private succeeded(): void {
+    if (this.failures >= FAILURES_BEFORE_BACKOFF) console.log("[power] plug reachable again")
+    this.failures = 0
+    this.retryAt = 0
+  }
+
   private failed(err: unknown): void {
-    if (!this.failing) console.warn(`[power] plug read failed: ${(err as Error).message}`)
-    this.failing = true
-    this.drop()
-    this.retryAt = Date.now() + RECONNECT_MS
+    this.failures++
+    if (this.failures === FAILURES_BEFORE_BACKOFF) {
+      console.warn(`[power] plug read failed ${this.failures} times: ${(err as Error).message}`)
+    }
+    if (this.failures >= FAILURES_BEFORE_BACKOFF) this.retryAt = Date.now() + RECONNECT_MS
   }
 
   read(): Promise<PowerReading | null> {
     if (Date.now() < this.retryAt) return Promise.resolve(null)
     return this.serial(async () => {
       try {
-        const r = await this.fetchReading()
-        if (this.failing) console.log("[power] plug reachable again")
-        this.failing = false
+        const r = await this.withDevice((d) => this.fetchReading(d))
+        this.succeeded()
         return r
       } catch (err) {
         this.failed(err)
@@ -111,15 +113,16 @@ export class TuyaPower implements PowerSource {
     })
   }
 
-  // Someone is waiting on this, so it ignores the reconnect backoff and throws on failure
+  // Someone is waiting on this, so it ignores the backoff and throws on failure
   setSwitch(on: boolean): Promise<PowerReading> {
     return this.serial(async () => {
       try {
-        const d = await this.connect()
-        await withTimeout(d.set({ dps: Number(SWITCH_DPS), set: on }), "set")
-        this.failing = false
-        this.retryAt = 0
-        return await this.fetchReading()
+        const r = await this.withDevice(async (d) => {
+          await withTimeout(d.set({ dps: Number(SWITCH_DPS), set: on }), "set")
+          return this.fetchReading(d)
+        })
+        this.succeeded()
+        return r
       } catch (err) {
         this.failed(err)
         throw err
