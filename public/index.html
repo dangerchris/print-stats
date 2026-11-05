@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Print Stats</title>
 <link rel="stylesheet" href="/static/app.css">
+<script src="/static/vendor/mpegts-1.8.0.min.js"></script>
 </head>
 <body>
 <div id="nav"></div>
@@ -26,7 +27,19 @@
       </div>
     </div>
   </section>
-  <section id="live" class="card" hidden></section>
+  <section id="live" class="card" hidden>
+    <div class="live-wrap">
+      <div class="cam" id="cam">
+        <button type="button" class="cam-thumb" id="cam-thumb" aria-label="Play the live camera">
+          <img id="cam-img" alt="Printer camera"><span class="cam-play" aria-hidden="true"></span>
+        </button>
+        <video id="cam-video" muted playsinline controls hidden></video>
+        <div class="cam-bar"><span class="muted" id="cam-status">Live camera</span>
+          <button type="button" class="linkish" id="cam-close" hidden>Close</button></div>
+      </div>
+      <div id="live-body"></div>
+    </div>
+  </section>
   <section id="tiles" class="tiles"></section>
   <section id="colours" class="card" hidden>
     <h2>Filament by colour</h2>
@@ -257,12 +270,13 @@ plugEls["plug-btn"].onclick = async () => {
 async function loadLive() {
   const l = await api("/api/live")
   renderPower(l)
-  const el = document.getElementById("live")
+  const card = document.getElementById("live")
+  const el = document.getElementById("live-body")
   const active = l.online && (l.state === "printing" || l.state === "paused" || l.jobId)
   if (!active && l.online && l.preparing) {
     // Before the file starts the printer doesn't say what it will print
     const t = l.temps
-    el.hidden = false
+    showLive(card, true)
     el.innerHTML = `<div class="live"><div>
       <div class="name">Preparing to print <span class="status in_progress">Preparing</span></div>
       <div class="live-stats"><span>Heating and levelling for <b class="num">${duration(Date.now() / 1000 - l.preparing.since)}</b></span>
@@ -273,7 +287,7 @@ async function loadLive() {
       </div></div>`
     return l
   }
-  el.hidden = !active
+  showLive(card, !!active)
   if (!active) return l
   const pct = (l.progress ?? 0) * 100
   const name = (l.filename ?? "").replace(/\.gcode$/, "").replace(/\.(stl|3mf)_.*$/, "")
@@ -301,6 +315,114 @@ async function loadLive() {
   </div>`
   return l
 }
+
+// Live camera: a snapshot thumbnail that turns into the live feed (MPEG-TS from the camera bridge,
+// played with mpegts.js). Closing it, or the job ending, stops the stream.
+const cam = Object.fromEntries(["cam-thumb", "cam-img", "cam-video", "cam-status", "cam-close"].map((id) => [id, document.getElementById(id)]))
+let player = null
+let thumbAt = 0
+
+function showLive(card, on) {
+  card.hidden = !on
+  if (!on) return closePlayer()
+  if (!player && Date.now() - thumbAt > 30_000) loadThumb()
+  if (!player && shotAt) cam["cam-status"].textContent = `Live camera · snapshot ${ago(shotAt)}`
+}
+
+const ago = (t) => {
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000))
+  return s < 60 ? `${s}s ago` : `${Math.floor(s / 60)}m ago`
+}
+
+// The bridge caches snapshots for 30 s and, past that, answers with the old frame while it takes a
+// new one (~7 s). An old answer is fetched again once the new frame should be ready.
+let shotAt = 0
+let thumbRetry = null
+async function loadThumb() {
+  thumbAt = Date.now()
+  clearTimeout(thumbRetry)
+  try {
+    const res = await fetch(`/api/camera/snapshot?t=${thumbAt}`)
+    if (!res.ok) return
+    const age = Number(res.headers.get("x-snapshot-age")) || 0
+    const url = URL.createObjectURL(await res.blob())
+    const img = cam["cam-img"]
+    const old = img.src
+    img.src = url
+    if (old.startsWith("blob:")) URL.revokeObjectURL(old)
+    shotAt = Date.now() - age * 1000
+    if (age > 25) thumbRetry = setTimeout(() => !player && loadThumb(), 10_000)
+  } catch {}
+}
+
+function closePlayer(message = "Live camera") {
+  if (player) {
+    try {
+      player.destroy()
+    } catch {}
+    player = null
+  }
+  cam["cam-video"].hidden = true
+  cam["cam-video"].removeAttribute("src")
+  cam["cam-thumb"].hidden = false
+  cam["cam-close"].hidden = true
+  cam["cam-status"].textContent = message
+  document.getElementById("cam").classList.remove("playing")
+}
+
+// When the player fails (for example the browser rejecting a frame damaged by packet loss) the
+// stream itself carries on, so reconnect: the server starts a viewer at the latest keyframe (one a
+// second). Each failure is reported to the service log.
+let failures = []
+function startPlayer() {
+  const video = cam["cam-video"]
+  player = mpegts.createPlayer({ type: "mpegts", isLive: true, url: "/api/camera/live.ts" }, {
+    enableStashBuffer: false,
+    liveBufferLatencyChasing: true,
+    liveBufferLatencyMaxLatency: 3,
+    liveBufferLatencyMinRemain: 0.5,
+    autoCleanupSourceBuffer: true,
+  })
+  player.attachMediaElement(video)
+  const restart = (why, detail) => {
+    if (!player) return
+    fetch("/api/camera/error", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ why, detail, mediaError: video.error && { code: video.error.code, message: video.error.message },
+        currentTime: video.currentTime, userAgent: navigator.userAgent }) }).catch(() => {})
+    const now = Date.now()
+    failures = failures.filter((t) => now - t < 60_000).concat(now)
+    try {
+      player.destroy()
+    } catch {}
+    player = null
+    if (failures.length > 5) return closePlayer("The live feed keeps failing. Click to retry.")
+    cam["cam-status"].textContent = "Reconnecting…"
+    setTimeout(() => {
+      if (!player && !cam["cam-video"].hidden) startPlayer()
+    }, 1000)
+  }
+  player.on(mpegts.Events.ERROR, (type, detail, info) => restart(`${type}: ${detail}`, info))
+  player.on(mpegts.Events.LOADING_COMPLETE, () => restart("stream ended", null))
+  video.onplaying = () => (cam["cam-status"].textContent = "Live")
+  player.load()
+  player.play()?.catch?.(() => {})
+}
+
+cam["cam-thumb"].onclick = () => {
+  if (player) return
+  if (!window.mpegts?.isSupported()) {
+    cam["cam-status"].textContent = "This browser can't play the live feed."
+    return
+  }
+  failures = []
+  cam["cam-thumb"].hidden = true
+  cam["cam-video"].hidden = false
+  cam["cam-close"].hidden = false
+  cam["cam-status"].textContent = "Connecting to the camera…"
+  document.getElementById("cam").classList.add("playing")
+  startPlayer()
+}
+cam["cam-close"].onclick = () => closePlayer()
 
 let lastJobId
 async function refresh() {

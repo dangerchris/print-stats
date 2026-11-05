@@ -9,6 +9,7 @@ import { loadSettings, saveSettings, type Settings } from "./cost"
 import { groupId, jobWindow, recalculateAll } from "./jobs"
 import { estimateWatts } from "./power"
 import { BAND_LABEL, bandAt, validTou } from "./tou"
+import { cameraSnapshot, liveStream, logPlayerError } from "./camera"
 import type { Collector } from "./collector"
 
 // ---- auth: LAN is open; requests through the cloudflared tunnel need a password session ----
@@ -300,6 +301,12 @@ export function startServer(db: Database, collector: Collector) {
       if (p === "/api/live") {
         const s = loadSettings(db)
         return json({ ...collector.live, currency: s.currency, rate: rateNow(s) })
+      }
+      if (p === "/api/camera/live.ts") return liveStream(req)
+      if (p === "/api/camera/snapshot") return cameraSnapshot()
+      if (p === "/api/camera/error" && req.method === "POST") {
+        logPlayerError(await req.json().catch(() => null))
+        return json({ ok: true })
       }
       if (p === "/api/summary") return json({ ...summary(db), currency: loadSettings(db).currency })
       if (p === "/api/jobs") return json(groups(db).reverse())

@@ -5,6 +5,7 @@ import { cfsFromStatus, cfsStateFromStatus, loadSettings, priceJob, type CfsSlot
 import { slicerFromLive, type SlicerInfo } from "./gcode"
 import { finalizeJob, groupId, linkFragment, upsertHistoryJob, ensureSlicer, parseCfs, jobEnergy, ensurePrep, detectPrep, looksLikePrep } from "./jobs"
 import { captureFrame, mediaSweep, saveFinalSnapshot } from "./media"
+import { releaseCamera } from "./camera"
 import { historyList, queryObjects } from "./moonraker"
 import type { PowerReading, PowerSource } from "./power"
 
@@ -131,7 +132,7 @@ export class Collector {
     // Leaving "printing" for anything but a Klipper pause: take the final picture now, while it's fresh
     if (changed && this.lastState === "printing" && state !== "paused" && prevJobId) {
       const group = this.groupOf(prevJobId)
-      saveFinalSnapshot(this.db, group).catch((e) => console.error("[media] snapshot failed:", e))
+      releaseCamera().then(() => saveFinalSnapshot(this.db, group)).catch((e) => console.error("[media] snapshot failed:", e))
     }
 
     const layer = num(status.virtual_sdcard?.layer)
